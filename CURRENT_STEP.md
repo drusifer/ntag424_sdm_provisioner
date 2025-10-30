@@ -1,6 +1,6 @@
 # Current Step: Deep Dive Phase 2 Authentication Investigation
 
-**TLDR;**: Phase 2 consistently fails with SW=91AE (Wrong RndB') despite correct format. Need to investigate Phase 1 RndB extraction, decryption, and Phase 2 encryption more deeply. Registry key fixed, format validated, but RndB' calculation is wrong.
+TLDR; Deep dive complete: implementation matches NXP spec, but Seritag still rejects Phase 2 with SW=91AE. Static URL provisioning works; SUN/SDM blocked pending Seritag-specific auth path.
 
 ---
 

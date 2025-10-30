@@ -1,6 +1,6 @@
 # NTAG424 SDM Provisioner - Implementation Plan
 
-**TLDR;**: Game coin use case - NFC tags must serve authenticated URLs (UID+MAC+Counter) for server verification. **BREAKTHROUGH**: NDEF read/write works WITHOUT authentication on Seritag tags! Static URL provisioning works ✅. Phase 2 auth fails (Seritag-specific) ❌. All protocol steps verified correct ✅. Registry key fixed ✅.
+TLDR; Static URL provisioning is working now on Seritag (no auth). SDM/SUN remains blocked by Seritag Phase 2 behavior (SW=91AE) despite spec-correct implementation. Proceed with static URL for production while continuing Seritag-specific auth research.
 
 ---
 

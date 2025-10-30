@@ -1,5 +1,7 @@
 # **NTAG424 SDM Provisioner**
 
+TLDR; Static URL NDEF provisioning works on Seritag tags without authentication; SDM/SUN is blocked by Phase 2 auth (Seritag-specific). Use `examples/seritag` for diagnostics and `tests/` with the mock HAL. Canonical docs: `SERITAG_INVESTIGATION_COMPLETE.md`, `Plan.md`, `ARCH.md`, `Requirements.md`, `CURRENT_STEP.md`.
+
 This project provides a Python-based toolkit for provisioning NXP NTAG424 DNA NFC tags for Secure Dynamic Messaging (SDM). It offers a modular, command-oriented framework for interacting with the tag at a low level, enabling developers to perform a full provisioning sequence from a factory-default state.
 
 ## **Features**
@@ -71,6 +73,27 @@ Running examples/04\_change\_key.py or examples/05\_provision\_sdm.py will **per
 Always handle keys securely and ensure you have a system for storing them before provisioning tags for production use.
 
 ---
+
+## Quick Start (Seritag)
+
+Static URL provisioning (works without authentication on Seritag):
+
+```bash
+python examples/13_working_ndef.py
+```
+
+Diagnostics and deep dive scripts:
+
+```bash
+python examples/seritag/test_phase2_deep_dive.py
+python examples/seritag/test_sun_configuration_acceptance.py
+```
+
+Mock HAL for tests (no hardware):
+
+```bash
+$env:USE_MOCK_HAL="1"; pytest -q
+```
 
 # Diagrams
 To illustrate the NTAG424 SDM Provisioning Protocol Flow, I'll create a sequence diagram that typically covers the core provisioning steps:
