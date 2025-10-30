@@ -1,4 +1,0 @@
-[console_scripts]
-extract-pdf = pdf_to_markdown_extractor:main
-provision-tag = ntag424_sdm_provisioner.main:cli
-test-simulator = tests.test_seritag_ev2_compliance:main

@@ -1,1 +1,0 @@
-ntag424_sdm_provisioner
