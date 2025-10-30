@@ -1,0 +1,55 @@
+[project]
+name = "ntag424-sdm-provisioner"
+version = "0.1.0"
+description = "A Python tool to provision NTAG424 DNA tags for SDM."
+authors = [{ name = "Drew's Coding Partner" }]
+requires-python = ">=3.8"
+dependencies = [
+    "pyscard>=2.0.0",
+    "pycryptodome>=3.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+docs = [
+    "PyMuPDF>=1.20.0",
+    "Pillow>=9.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Command-line scripts
+[project.scripts]
+provision-tag = "ntag424_sdm_provisioner.main:cli"
+test-simulator = "tests.test_seritag_ev2_compliance:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings"
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests", 
+    "simulator: Tests using Seritag simulator",
+    "hardware: Tests requiring real hardware"
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning"
+]
+
+# Unittest configuration
+[tool.unittest]
+discover = {start-directory = "tests", pattern = "test_*.py"}
+

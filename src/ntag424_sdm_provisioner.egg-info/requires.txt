@@ -1,0 +1,14 @@
+pyscard>=2.0.0
+pycryptodome>=3.12.0
+
+[dev]
+pytest>=7.0.0
+
+[docs]
+PyMuPDF>=1.20.0
+Pillow>=9.0.0
+
+[extraction]
+PyMuPDF>=1.20.0
+Pillow>=9.0.0
+pytesseract>=0.3.10

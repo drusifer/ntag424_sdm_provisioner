@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: ntag424-sdm-provisioner
+Version: 0.1.0
+Summary: A Python tool to provision NTAG424 DNA tags for SDM.
+Author: Drew's Coding Partner
+Requires-Python: >=3.8
+Requires-Dist: pyscard>=2.0.0
+Requires-Dist: pycryptodome>=3.12.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Provides-Extra: docs
+Requires-Dist: PyMuPDF>=1.20.0; extra == "docs"
+Requires-Dist: Pillow>=9.0.0; extra == "docs"
+Provides-Extra: extraction
+Requires-Dist: PyMuPDF>=1.20.0; extra == "extraction"
+Requires-Dist: Pillow>=9.0.0; extra == "extraction"
+Requires-Dist: pytesseract>=0.3.10; extra == "extraction"

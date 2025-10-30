@@ -1,0 +1,19 @@
+{
+    "configurations": [
+
+        {
+            "name": "provision_sdm",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}\\examples\\05_provision_sdm.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            // Replace with your venv python.exe path:
+            "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+            "justMyCode": false
+        }
+    ]
+}

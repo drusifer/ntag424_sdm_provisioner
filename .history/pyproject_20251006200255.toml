@@ -1,0 +1,23 @@
+[project]
+name = "ntag424-sdm-provisioner"
+version = "0.1.0"
+description = "A Python tool to provision NTAG424 DNA tags for SDM."
+authors = [{ name = "Drew's Coding Partner" }]
+requires-python = ">=3.8"
+dependencies = [
+    # Handle cross-platform PC/SC library installation
+    "pyscard>=2.0.0",
+    "pycryptodome>=3.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Placeholder for a future command-line script entry point
+[project.scripts]
+provision-tag = "ntag424_sdm_provisioner.main:cli"
