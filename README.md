@@ -1,6 +1,6 @@
 # **NTAG424 SDM Provisioner**
 
-TLDR; Static URL NDEF provisioning works on Seritag tags without authentication; SDM/SUN is blocked by Phase 2 auth (Seritag-specific). Use `examples/seritag` for diagnostics and `tests/` with the mock HAL. Canonical docs: `SERITAG_INVESTIGATION_COMPLETE.md`, `Plan.md`, `ARCH.md`, `Requirements.md`, `CURRENT_STEP.md`.
+TLDR; **Authentication SOLVED ✅** - CBC mode fix. Static URL NDEF provisioning works; Full chip diagnostic example (`examples/19_full_chip_diagnostic.py`); API refactored with dataclasses. Ready for SDM/SUN provisioning. Canonical docs: `SERITAG_INVESTIGATION_COMPLETE.md`, `Plan.md`, `ARCH.md`, `Requirements.md`, `CURRENT_STEP.md`.
 
 This project provides a Python-based toolkit for provisioning NXP NTAG424 DNA NFC tags for Secure Dynamic Messaging (SDM). It offers a modular, command-oriented framework for interacting with the tag at a low level, enabling developers to perform a full provisioning sequence from a factory-default state.
 

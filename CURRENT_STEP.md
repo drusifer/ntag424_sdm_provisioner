@@ -1,16 +1,17 @@
-# Current Step: Deep Dive Phase 2 Authentication Investigation
+# Current Step: Authentication Fixed - API Cleanup and Documentation
 
-TLDR; Deep dive complete: implementation matches NXP spec, but Seritag still rejects Phase 2 with SW=91AE. Static URL provisioning works; SUN/SDM blocked pending Seritag-specific auth path.
+TLDR; Authentication SOLVED ✅ - Fixed CBC mode encryption; Full chip diagnostic example created; API refactored with dataclasses and helpers. Next: Complete SDM/SUN provisioning workflow.
 
 ---
 
 ## Step Goal
 
-Deep dive into Phase 2 authentication to identify why RndB' calculation fails on Seritag tags, even though:
-- ✅ Phase 1 works (returns 16 bytes encrypted RndB)
-- ✅ Standard left rotate (1 byte) is correct format (accepted by tag)
-- ✅ Command format is correct (SW=91AE, not SW=911C)
-- ❌ Phase 2 fails with SW=91AE (Wrong RndB')
+Complete API refactoring and documentation:
+- ✅ Authentication fixed (CBC mode with zero IV)
+- ✅ Full chip diagnostic example created (`examples/19_full_chip_diagnostic.py`)
+- ✅ Command classes moved to proper modules (`GetFileIds`, `GetFileSettings`, `GetKeyVersion`)
+- ✅ Parsing/formatting moved to helpers and dataclasses
+- ✅ Fresh tag handling implemented
 
 ---
 
@@ -18,26 +19,28 @@ Deep dive into Phase 2 authentication to identify why RndB' calculation fails on
 
 ### Previous Findings
 - ✅ **Registry Key Fixed**: EscapeCommandEnable now set correctly
-- ✅ **Format Validation Works**: Standard left rotate is accepted by Seritag
-- ✅ **Static URL Works**: NDEF provisioning works without auth (workaround found)
-- ✅ **Phase 1 Works**: Returns 16 bytes encrypted RndB
-- ❌ **Phase 2 Fails**: SW=91AE (Wrong RndB') across all keys tested
-- ❌ **Comprehensive Variations**: 15 combinations tested, all failed
+- ✅ **Authentication Fixed**: CBC mode with zero IV (root cause identified and fixed)
+- ✅ **Static URL Works**: NDEF provisioning works without auth
+- ✅ **Phase 1 & 2 Work**: Full EV2 authentication now successful
+- ✅ **Session Keys Derived**: Can now use authenticated commands
 
 ### Current Situation
-- Game coins can be provisioned with static URLs (workaround)
-- SDM/SUN requires full authentication (Phase 2 must work for dynamic auth)
-- Phase 2 consistently fails despite correct protocol format
-- Need to identify the root cause of RndB' mismatch
+- Authentication fully working (CBC mode fix)
+- API refactored with clean command classes
+- Full chip diagnostic example demonstrates API usage
+- Ready to implement complete SDM/SUN provisioning workflow
 
 ### User Story
-**As a game developer**, I want Phase 2 authentication to work on Seritag tags, so that I can configure SDM/SUN for dynamic authenticated URLs with counter and MAC tokens.
+**As a developer**, I want a clean, well-documented API for reading chip information, so that I can diagnose tag state and provision SDM/SUN settings.
 
 **Acceptance Criteria:**
-- [ ] Phase 2 authentication succeeds (SW=9000)
-- [ ] Session keys can be derived after Phase 2
-- [ ] Can configure SDM/SUN after successful authentication
-- [ ] Can provision tags with dynamic authenticated URLs
+- [x] Authentication succeeds (SW=9000 or 9100) ✅
+- [x] Session keys can be derived after authentication ✅
+- [x] Command classes properly organized ✅
+- [x] Parsing/formatting in helpers and dataclasses ✅
+- [x] Canonical example demonstrating API usage ✅
+- [ ] Can configure SDM/SUN after successful authentication (in progress)
+- [ ] Can provision tags with dynamic authenticated URLs (pending)
 
 ---
 
@@ -219,21 +222,43 @@ def test_phase2_apdu_bytes():
 **Blockers**: None (registry key fixed, fresh tag available)  
 **Next Review**: After analyzing findings
 
-## Deep Dive Results Summary
+## Recent Work Summary
 
-### All Steps Verified Correct ✅
-1. **Phase 1 Response**: 16 bytes encrypted RndB - ✅ Correct
-2. **Phase 1 Decryption**: AES-ECB decryption works - ✅ Correct  
-3. **RndB Rotation**: Left rotate by 1 byte verified byte-by-byte - ✅ Correct
-4. **Phase 2 Plaintext**: RndA || RndB' (32 bytes, block-aligned) - ✅ Correct
-5. **Phase 2 Encryption**: AES-ECB (2 blocks of 16 bytes) - ✅ Correct
-6. **Phase 2 APDU**: Format matches spec exactly - ✅ Correct
-7. **Phase 2 Result**: Still fails with SW=91AE - ❌ Tag rejects RndB'
+### Authentication Fix ✅
+1. **Root Cause Identified**: Using ECB mode instead of CBC mode with zero IV
+2. **Fix Implemented**: Changed `auth_session.py` to use `AES.MODE_CBC` with `iv = b'\x00' * 16`
+3. **Secondary Fix**: Accept `SW_OK_ALTERNATIVE` (0x9100) as success status
+4. **Verification**: Authentication now works successfully on Seritag tags
+
+### API Refactoring ✅
+1. **Command Classes**: Moved `GetFileIds`, `GetFileSettings`, `GetKeyVersion` to `sdm_commands.py`
+2. **Dataclasses**: Added `FileSettingsResponse` and `KeyVersionResponse` with `__str__` methods
+3. **Helpers**: Added `parse_file_settings()` and `parse_key_version()` to `sdm_helpers.py`
+4. **Example**: Created `examples/19_full_chip_diagnostic.py` as canonical API usage example
+
+### Fresh Tag Handling ✅
+1. **File Detection**: Gracefully handles missing files (expected for fresh tags)
+2. **Error Messages**: Clear context for expected errors on fresh tags
+3. **Guidance**: Provides next steps for tag initialization
 
 ### Conclusion
-**ALL protocol steps are implemented correctly according to NXP spec, but Seritag still rejects Phase 2.**
+**Authentication is fully working. API is clean and well-organized. Ready for SDM/SUN provisioning implementation.**
 
-This confirms the issue is **Seritag-specific protocol difference**, not an implementation bug:
-- Either Seritag uses a different key (not factory key all zeros)
-- Or Seritag extracts/stores/rotates RndB differently internally
-- Or Seritag has a custom authentication flow variant
+---
+
+## Cleanup Complete ✅
+
+### Archived Files
+- 23 temporary investigation scripts moved to `examples/seritag/investigation/`
+- Investigation scripts preserved for historical reference
+- Main examples directory cleaned and focused
+
+### Documentation Updated
+- `CURRENT_STEP.md` - Updated with current status
+- `MINDMAP.md` - Updated with authentication SOLVED
+- `README.md` - Updated TLDR
+- `SERITAG_INVESTIGATION_COMPLETE.md` - Updated with authentication fix
+- `AUTH_FLOW_ANALYSIS.md` - Marked as historical
+- `PROGRESS_SUMMARY.md` - Created to track progress
+- `CHANGELOG.md` - Created to track changes
+- `CLEANUP_PLAN.md` - Created to track cleanup
