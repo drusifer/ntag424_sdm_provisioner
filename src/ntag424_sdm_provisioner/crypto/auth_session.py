@@ -167,8 +167,10 @@ class Ntag424AuthSession:
         Returns:
             Decrypted RndB (16 bytes)
         """
-        # Use ECB mode for authentication (no padding per NTAG424 DNA spec)
-        cipher = AES.new(self.key, AES.MODE_ECB)
+        # Use CBC mode with zero IV for authentication (per NTAG424 DNA spec Section 9.1.4)
+        # No padding is applied during authentication
+        iv = b'\x00' * 16
+        cipher = AES.new(self.key, AES.MODE_CBC, iv=iv)
         return cipher.decrypt(encrypted_rndb)
     
     def _encrypt_response(self, rnda: bytes, rndb_rotated: bytes) -> bytes:
@@ -183,8 +185,10 @@ class Ntag424AuthSession:
             Encrypted 32-byte response
         """
         plaintext = rnda + rndb_rotated
-        # Use ECB mode for authentication (no padding per NTAG424 DNA spec)
-        cipher = AES.new(self.key, AES.MODE_ECB)
+        # Use CBC mode with zero IV for authentication (per NTAG424 DNA spec Section 9.1.4)
+        # No padding is applied during authentication
+        iv = b'\x00' * 16
+        cipher = AES.new(self.key, AES.MODE_CBC, iv=iv)
         return cipher.encrypt(plaintext)
     
     def _parse_card_response(self, encrypted_response: bytes, rnda: bytes) -> AuthenticationResponse:
@@ -205,8 +209,9 @@ class Ntag424AuthSession:
         """
         log.debug(f"Parsing card response: {encrypted_response.hex()}")
         
-        # Decrypt the response
-        cipher = AES.new(self.key, AES.MODE_ECB)
+        # Decrypt the response using CBC mode with zero IV (per NTAG424 DNA spec Section 9.1.4)
+        iv = b'\x00' * 16
+        cipher = AES.new(self.key, AES.MODE_CBC, iv=iv)
         decrypted_response = cipher.decrypt(encrypted_response)
         
         log.debug(f"Decrypted response: {decrypted_response.hex()}")

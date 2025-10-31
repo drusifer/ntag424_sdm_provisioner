@@ -1,11 +1,14 @@
 
 from logging import getLogger
+from typing import List, Optional
 
 from ntag424_sdm_provisioner.commands.base import ApduCommand, ApduError
 from ntag424_sdm_provisioner.constants import (
     SW_ADDITIONAL_FRAME, SW_OK, SW_OK_ALTERNATIVE,
-    AuthenticationChallengeResponse, Ntag424VersionInfo, ReadDataResponse, SuccessResponse
+    AuthenticationChallengeResponse, Ntag424VersionInfo, ReadDataResponse, SuccessResponse,
+    FileSettingsResponse, KeyVersionResponse
 )
+from ntag424_sdm_provisioner.commands.sdm_helpers import parse_file_settings, parse_key_version
 from ntag424_sdm_provisioner.hal import NTag424CardConnection, hexb
 
 log = getLogger(__name__)
@@ -181,7 +184,8 @@ class AuthenticateEV2Second(ApduCommand):
             data, sw1, sw2 = self.send_apdu(connection, af_apdu)
             full_response.extend(data)
         
-        if (sw1, sw2) != SW_OK:
+        # Accept both SW_OK (0x9000) and SW_OK_ALTERNATIVE (0x9100) as success
+        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
             raise ApduError("AuthenticateEV2Second failed", sw1, sw2)
         
         return bytes(full_response)  # Return the card's encrypted response data
@@ -204,6 +208,106 @@ class ChangeKey(ApduCommand):
         if (sw1, sw2) != SW_OK:
             raise ApduError(f"Failed to change key number {self.key_no}", sw1, sw2)
         return SuccessResponse(f"Key 0x{self.key_no:02X} changed successfully.")
+
+class GetFileIds(ApduCommand):
+    """Get list of file IDs in the application."""
+    
+    def __init__(self):
+        super().__init__(use_escape=True)
+    
+    def __str__(self) -> str:
+        return "GetFileIds()"
+    
+    def execute(self, connection: 'NTag424CardConnection') -> List[int]:
+        apdu = [0x90, 0x6F, 0x00, 0x00, 0x00]
+        data, sw1, sw2 = self.send_apdu(connection, apdu)
+        
+        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
+            raise ApduError("GetFileIds failed", sw1, sw2)
+        
+        return list(data)
+
+
+class GetFileSettings(ApduCommand):
+    """Get settings for a specific file. Requires authentication for CommMode.MAC."""
+    
+    def __init__(self, file_no: int, session: Optional['Ntag424AuthSession'] = None):
+        super().__init__(use_escape=True)
+        self.file_no = file_no
+        self.session = session
+    
+    def __str__(self) -> str:
+        return f"GetFileSettings(file_no=0x{self.file_no:02X})"
+    
+    def execute(self, connection: 'NTag424CardConnection') -> FileSettingsResponse:
+        from ntag424_sdm_provisioner.crypto.auth_session import Ntag424AuthSession
+        
+        # Build base command
+        cmd_header = bytes([0x90, 0xF5, 0x00, 0x00])
+        cmd_data = bytes([self.file_no])
+        
+        # Apply CMAC if session provided (required for CommMode.MAC)
+        if self.session:
+            cmd_data = self.session.apply_cmac(cmd_header, cmd_data)
+        
+        # Build APDU
+        apdu = list(cmd_header) + [len(cmd_data)] + list(cmd_data) + [0x00]
+        
+        data, sw1, sw2 = self.send_apdu(connection, apdu)
+        
+        # Handle additional frames
+        full_response = bytearray(data)
+        while (sw1, sw2) == SW_ADDITIONAL_FRAME:
+            log.info("GetFileSettings: Additional frame requested, sending GET ADDITIONAL FRAME...")
+            af_header = bytes([0x90, 0xAF, 0x00, 0x00])
+            af_data = b''
+            if self.session:
+                af_data = self.session.apply_cmac(af_header, af_data)
+            af_apdu = list(af_header) + [len(af_data)] + list(af_data) + [0x00]
+            
+            data, sw1, sw2 = self.send_apdu(connection, af_apdu)
+            full_response.extend(data)
+        
+        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
+            raise ApduError(f"GetFileSettings failed for file 0x{self.file_no:02X}", sw1, sw2)
+        
+        # Parse and return structured response
+        return parse_file_settings(self.file_no, bytes(full_response))
+
+
+class GetKeyVersion(ApduCommand):
+    """Get version of a specific key. Requires authentication with CommMode.MAC."""
+    
+    def __init__(self, key_no: int, session: Optional['Ntag424AuthSession'] = None):
+        super().__init__(use_escape=True)
+        self.key_no = key_no
+        self.session = session
+    
+    def __str__(self) -> str:
+        return f"GetKeyVersion(key_no=0x{self.key_no:02X})"
+    
+    def execute(self, connection: 'NTag424CardConnection') -> KeyVersionResponse:
+        from ntag424_sdm_provisioner.crypto.auth_session import Ntag424AuthSession
+        
+        # Build base command
+        cmd_header = bytes([0x90, 0x64, 0x00, 0x00])
+        cmd_data = bytes([self.key_no])
+        
+        # Apply CMAC if session provided (required for CommMode.MAC)
+        if self.session:
+            cmd_data = self.session.apply_cmac(cmd_header, cmd_data)
+        
+        # Build APDU
+        apdu = list(cmd_header) + [len(cmd_data)] + list(cmd_data) + [0x00]
+        
+        data, sw1, sw2 = self.send_apdu(connection, apdu)
+        
+        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
+            raise ApduError(f"GetKeyVersion failed for key 0x{self.key_no:02X}", sw1, sw2)
+        
+        # Parse and return structured response
+        return parse_key_version(self.key_no, bytes(data))
+
 
 class WriteData(ApduCommand):
     """Writes data to a standard file on the card."""

@@ -560,6 +560,68 @@ class ReadDataResponse:
         return f"ReadDataResponse(file_no={self.file_no}, offset={self.offset}, data_len={len(self.data)}, data={self.data.hex().upper()[:32]}{'...' if len(self.data) > 16 else ''})"
 
 
+@dataclass
+class FileSettingsResponse:
+    """Response from GetFileSettings command."""
+    file_no: int
+    file_type: int
+    file_option: int
+    access_rights: bytes
+    file_size: int
+    sdm_options: Optional[int] = None
+    sdm_access_rights: Optional[bytes] = None
+    uid_offset: Optional[int] = None
+    read_ctr_offset: Optional[int] = None
+    picc_data_offset: Optional[int] = None
+    mac_input_offset: Optional[int] = None
+    enc_offset: Optional[int] = None
+    enc_length: Optional[int] = None
+    mac_offset: Optional[int] = None
+    read_ctr_limit: Optional[int] = None
+    
+    def __str__(self) -> str:
+        lines = [
+            f"File 0x{self.file_no:02X} Settings:",
+            f"  File Type: 0x{self.file_type:02X}",
+            f"  File Option: 0x{self.file_option:02X}",
+            f"  Access Rights: {self.access_rights.hex().upper()}",
+            f"  File Size: {self.file_size} bytes",
+        ]
+        
+        if self.sdm_options is not None:
+            lines.append(f"  SDM Options: 0x{self.sdm_options:02X}")
+            if self.sdm_access_rights:
+                lines.append(f"  SDM Access Rights: {self.sdm_access_rights.hex().upper()}")
+            if self.uid_offset is not None:
+                lines.append(f"  UID Offset: {self.uid_offset}")
+            if self.read_ctr_offset is not None:
+                lines.append(f"  Read Counter Offset: {self.read_ctr_offset}")
+            if self.picc_data_offset is not None:
+                lines.append(f"  PICC Data Offset: {self.picc_data_offset}")
+            if self.mac_input_offset is not None:
+                lines.append(f"  MAC Input Offset: {self.mac_input_offset}")
+            if self.enc_offset is not None:
+                lines.append(f"  Encryption Offset: {self.enc_offset}")
+                if self.enc_length is not None:
+                    lines.append(f"  Encryption Length: {self.enc_length}")
+            if self.mac_offset is not None:
+                lines.append(f"  MAC Offset: {self.mac_offset}")
+            if self.read_ctr_limit is not None:
+                lines.append(f"  Read Counter Limit: {self.read_ctr_limit}")
+        
+        return "\n".join(lines)
+
+
+@dataclass
+class KeyVersionResponse:
+    """Response from GetKeyVersion command."""
+    key_no: int
+    version: int
+    
+    def __str__(self) -> str:
+        return f"Key 0x{self.key_no:02X} Version: 0x{self.version:02X}"
+
+
 # ============================================================================
 # Configuration Dataclasses
 # ============================================================================
