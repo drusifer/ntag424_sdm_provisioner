@@ -15,14 +15,14 @@ def calculate_sdm_offsets(template: SDMUrlTemplate) -> Dict[str, int]:
     Returns:
         Dictionary with offset keys for SDMConfiguration
     """
-    # Build full URL
+    # Build full URL with correct parameter order: uid, ctr, cmac
     params = [f"uid={template.uid_placeholder}"]
-    if template.cmac_placeholder:
-        params.append(f"cmac={template.cmac_placeholder}")
-    if template.enc_placeholder:
-        params.append(f"enc={template.enc_placeholder}")
     if template.read_ctr_placeholder:
         params.append(f"ctr={template.read_ctr_placeholder}")
+    if template.enc_placeholder:
+        params.append(f"enc={template.enc_placeholder}")
+    if template.cmac_placeholder:
+        params.append(f"cmac={template.cmac_placeholder}")
     
     url = f"{template.base_url}?{'&'.join(params)}"
     
@@ -33,29 +33,34 @@ def calculate_sdm_offsets(template: SDMUrlTemplate) -> Dict[str, int]:
     
     offsets = {}
     
-    # Find UID offset
-    uid_start = url.find(template.uid_placeholder)
-    if uid_start != -1:
-        offsets['picc_data_offset'] = ndef_overhead + uid_start
-        offsets['mac_input_offset'] = ndef_overhead + uid_start
+    # Find UID offset by searching for 'uid=' parameter
+    uid_param = url.find('uid=')
+    if uid_param != -1:
+        uid_value_start = uid_param + 4  # Skip 'uid='
+        offsets['picc_data_offset'] = ndef_overhead + uid_value_start
+        offsets['mac_input_offset'] = ndef_overhead + uid_value_start
     
-    # Find CMAC offset
-    cmac_start = url.find(template.cmac_placeholder)
-    if cmac_start != -1:
-        offsets['mac_offset'] = ndef_overhead + cmac_start
+    # Find CMAC offset by searching for 'cmac=' parameter
+    if template.cmac_placeholder:
+        cmac_param = url.find('cmac=')
+        if cmac_param != -1:
+            cmac_value_start = cmac_param + 5  # Skip 'cmac='
+            offsets['mac_offset'] = ndef_overhead + cmac_value_start
     
-    # Find encrypted data offset
+    # Find encrypted data offset by searching for 'enc=' parameter
     if template.enc_placeholder:
-        enc_start = url.find(template.enc_placeholder)
-        if enc_start != -1:
-            offsets['enc_data_offset'] = ndef_overhead + enc_start
+        enc_param = url.find('enc=')
+        if enc_param != -1:
+            enc_value_start = enc_param + 4  # Skip 'enc='
+            offsets['enc_data_offset'] = ndef_overhead + enc_value_start
             offsets['enc_data_length'] = len(template.enc_placeholder) // 2
     
-    # Find read counter offset
+    # Find read counter offset by searching for 'ctr=' parameter
     if template.read_ctr_placeholder:
-        ctr_start = url.find(template.read_ctr_placeholder)
-        if ctr_start != -1:
-            offsets['read_ctr_offset'] = ndef_overhead + ctr_start
+        ctr_param = url.find('ctr=')
+        if ctr_param != -1:
+            ctr_value_start = ctr_param + 4  # Skip 'ctr='
+            offsets['read_ctr_offset'] = ndef_overhead + ctr_value_start
     
     return offsets
 
@@ -70,8 +75,12 @@ def build_sdm_settings_payload(config: SDMConfiguration) -> bytes:
     Returns:
         Byte array ready to send to card
     """
-    # Start with comm mode and access rights
-    data = bytearray([config.comm_mode])
+    # Start with FileOption byte (combines CommMode and SDM enable bit)
+    # FileOption: Bit 6 = SDM enabled, Bits 1-0 = CommMode
+    file_option = config.comm_mode  # Start with comm mode (bits 1-0)
+    if config.enable_sdm:
+        file_option |= 0x40  # Set bit 6 to enable SDM
+    data = bytearray([file_option])
     # Access rights can be bytes or AccessRights object - convert if needed
     if hasattr(config.access_rights, 'to_bytes'):
         access_rights_bytes = config.access_rights.to_bytes()
@@ -89,6 +98,17 @@ def build_sdm_settings_payload(config: SDMConfiguration) -> bytes:
     sdm_opts = config.sdm_options or (FileOption.SDM_ENABLED | FileOption.UID_MIRROR)
     data.append(sdm_opts)
     
+    # SDMAccessRights (2 bytes) - REQUIRED when SDM enabled!
+    # Per NXP spec: 16-bit value
+    # Bits 15-12 (high byte 7-4): SDMMetaRead
+    # Bits 11-8  (high byte 3-0): SDMFileRead
+    # Bits 7-4   (low byte 7-4): RFU (must be F)
+    # Bits 3-0   (low byte 3-0): SDMCtrRet
+    # For plain UID: SDMMetaRead=E, SDMFileRead=F, SDMCtrRet=E
+    # High byte = (E << 4) | F = 0xEF
+    # Low byte = (F << 4) | E = 0xFE (not 0x0E!)
+    data.extend([0xEF, 0xFE])  # SDMAccessRights (FIXED byte order!)
+    
     # Helper to add 3-byte little-endian offset
     def add_offset(value: int):
         data.extend([
@@ -97,21 +117,46 @@ def build_sdm_settings_payload(config: SDMConfiguration) -> bytes:
             (value >> 16) & 0xFF
         ])
     
-    # Add required offsets
-    add_offset(config.picc_data_offset)
-    add_offset(config.mac_input_offset)
+    # FIELD ORDER per NXP spec Section 10.7.1:
+    # The presence of each field depends on SDMOptions bits and SDMAccessRights values
     
-    # Optional encrypted data mirror
-    if config.enc_data_offset is not None:
-        add_offset(config.enc_data_offset)
-        add_offset(config.enc_data_length)
+    # From spec Table 69:
+    # UIDOffset [3] - Present if: (SDMOptions[Bit 7] = 1) AND (SDMMetaRead != Fh)
+    # SDMReadCtrOffset [3] - Present if: (SDMOptions[Bit 6] = 1) AND (SDMMetaRead != Fh)  
+    # PICCDataOffset [3] - Present if: SDMMetaRead = 0..4 (encrypted)
+    # SDMMACInputOffset [3] - Present if: SDMFileRead != Fh
+    # SDMENCOffset [3] - Present if: SDMOptions[Bit 4] = 1
+    # SDMENCLength [3] - Present if: SDMOptions[Bit 4] = 1
+    # SDMMACOffset [3] - Present if: SDMFileRead != Fh
+    # SDMReadCtrLimit [3] - Present if: SDMOptions[Bit 5] = 1
     
-    # MAC offset
-    add_offset(config.mac_offset)
+    # Our config: SDMMetaRead=E (plain), SDMFileRead=F (disabled)
     
-    # Optional read counter
-    if config.read_ctr_offset is not None:
-        add_offset(config.read_ctr_offset)
+    # 1. UIDOffset - if UID_MIRROR and SDMMetaRead != F
+    # We have SDMMetaRead=E, so this should be present
+    if sdm_opts & 0x80:  # UID_MIRROR (bit 7)
+        add_offset(config.picc_data_offset)  # UID offset
+    
+    # 2. SDMReadCtrOffset - if READ_COUNTER and SDMMetaRead != F
+    # SDMOptions bit 6 = READ_COUNTER (0x40)
+    if sdm_opts & 0x40:  # READ_COUNTER (bit 6, CORRECTED!)
+        if config.read_ctr_offset is not None:
+            add_offset(config.read_ctr_offset)
+    
+    # 3. PICCDataOffset - ONLY if SDMMetaRead = 0..4 (encrypted)
+    # We have SDMMetaRead=E, so SKIP
+    
+    # 4. SDMMACInputOffset - ONLY if SDMFileRead != F
+    # We have SDMFileRead=F, so SKIP
+    
+    # 5-6. SDMENCOffset/Length - ONLY if encryption enabled (bit 4)
+    # We don't have bit 4 set, so SKIP
+    
+    # 7. SDMMACOffset - ONLY if SDMFileRead != F
+    # We have SDMFileRead=F, so SKIP
+    
+    # 8. SDMReadCtrLimit - ONLY if bit 5 set (counter limit)
+    # We're not setting a limit, so SKIP
     
     return bytes(data)
 # file: ntag424_sdm_provisioner/utils/sdm_helpers.py

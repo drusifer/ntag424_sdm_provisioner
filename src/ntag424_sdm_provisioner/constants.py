@@ -340,13 +340,15 @@ class SDMOption(IntFlag):
     Can be combined using bitwise OR: SDMOption.ENABLED | SDMOption.UID_MIRROR
     """
     NONE = 0x00
-    READ_COUNTER = 0x20      # Mirror read counter in NDEF
-    ENABLED = 0x40           # Enable SDM
-    UID_MIRROR = 0x80        # Mirror UID in NDEF
+    ENCODING_ASCII = 0x01    # Bit 0: ASCII encoding
+    ENC_FILE_DATA = 0x10     # Bit 4: Encrypt file data  
+    READ_COUNTER_LIMIT = 0x20  # Bit 5: Enable counter limit
+    READ_COUNTER = 0x40      # Bit 6: Mirror read counter (FIXED!)
+    UID_MIRROR = 0x80        # Bit 7: Mirror UID in NDEF
     
-    # Common combinations
-    BASIC_SDM = ENABLED | UID_MIRROR
-    SDM_WITH_COUNTER = ENABLED | UID_MIRROR | READ_COUNTER
+    # Common combinations (Note: ENABLED goes in FileOption, not SDMOption!)
+    BASIC_SDM = UID_MIRROR
+    SDM_WITH_COUNTER = UID_MIRROR | READ_COUNTER
 
 
 # ============================================================================
@@ -671,11 +673,27 @@ class AuthSessionKeys:
 # ============================================================================
 
 class FileOption(IntFlag):
-    """File option flags for SDM configuration."""
-    SDM_ENABLED = 0x40
-    UID_MIRROR = 0x80
-    READ_COUNTER = 0x20
-    ENC_FILE_DATA = 0x08
+    """
+    File option flags for SDM configuration.
+    
+    Note: These combine FileOption byte (bits 1-0 = CommMode, bit 6 = SDM enable)
+    with SDMOptions byte (bits for UID/counter mirroring).
+    
+    FileOption byte:
+    - Bit 6: SDM enabled (0x40)
+    - Bits 1-0: CommMode
+    
+    SDMOptions byte:
+    - Bit 7: UID mirror (0x80)
+    - Bit 6: Read counter (0x40)
+    - Bit 5: Counter limit (0x20)
+    - Bit 4: Encrypt file data (0x10)
+    """
+    SDM_ENABLED = 0x40       # FileOption bit 6
+    UID_MIRROR = 0x80        # SDMOptions bit 7
+    READ_COUNTER = 0x40      # SDMOptions bit 6 (FIXED from 0x20!)
+    READ_COUNTER_LIMIT = 0x20  # SDMOptions bit 5
+    ENC_FILE_DATA = 0x10     # SDMOptions bit 4
 
 
 # ============================================================================

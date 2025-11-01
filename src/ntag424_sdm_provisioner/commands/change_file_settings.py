@@ -12,7 +12,7 @@ class ChangeFileSettings(ApduCommand):
     """Change file settings including SDM configuration."""
     
     def __init__(self, config: SDMConfiguration):
-        super().__init__(use_escape=True)
+        super().__init__(use_escape=False)  # Try direct transmit (not escape)
         self.config = config
     
     def __str__(self) -> str:

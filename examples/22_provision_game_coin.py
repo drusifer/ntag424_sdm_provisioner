@@ -148,8 +148,33 @@ def provision_game_coin():
                 session = None
             print()
             
-            # Step 4: Configure SDM (requires authentication)
-            print("Step 4: Configure SDM on NDEF File")
+            # Step 4: Write NDEF Message FIRST (before enabling SDM)
+            print("Step 4: Write NDEF Message")
+            print("-" * 70)
+            print("  [INFO] Writing NDEF before enabling SDM (data must exist first)")
+            
+            try:
+                # Select NDEF file
+                print("  Selecting NDEF file (0xE104)...")
+                select_ndef_apdu = [0x00, 0xA4, 0x02, 0x00, 0x02, 0xE1, 0x04, 0x00]
+                _, sw1, sw2 = card.send_apdu(select_ndef_apdu, use_escape=True)
+                if (sw1, sw2) in [(0x90, 0x00), (0x91, 0x00)]:
+                    print("  [OK] NDEF file selected")
+                
+                # Write NDEF data
+                print(f"  Writing {len(ndef_message)} bytes to NDEF file...")
+                write_cmd = WriteNdefMessage(ndef_data=ndef_message)
+                result = write_cmd.execute(card)
+                print(f"  [OK] {result}")
+                
+            except Exception as e:
+                print(f"  [ERROR] NDEF write failed: {e}")
+                import traceback
+                traceback.print_exc()
+            print()
+            
+            # Step 5: Configure SDM (requires authentication AND data written)
+            print("Step 5: Configure SDM on NDEF File")
             print("-" * 70)
             
             if session is None:
@@ -161,12 +186,11 @@ def provision_game_coin():
                     sdm_config = SDMConfiguration(
                         file_no=0x02,  # NDEF file
                         comm_mode=CommMode.PLAIN,  # Plain communication
-                        access_rights=b'\x00\xE0\xE0\x00',  # Read/Write: Free, Change: Key 0
+                        access_rights=b'\xE0\xEE',  # 2 bytes
                         enable_sdm=True,
                         sdm_options=(
-                            FileOption.SDM_ENABLED | 
-                            FileOption.UID_MIRROR | 
-                            FileOption.READ_COUNTER
+                            FileOption.UID_MIRROR |   # Bit 7
+                            FileOption.READ_COUNTER   # Bit 6 (now correct!)
                         ),
                         picc_data_offset=offsets.get('picc_data_offset', 0),
                         mac_input_offset=offsets.get('mac_input_offset', 0),
@@ -183,39 +207,10 @@ def provision_game_coin():
                     
                 except Exception as e:
                     print(f"  [ERROR] SDM configuration failed: {e}")
-                    print("  [INFO] May need different communication mode or access rights")
+                    print("  [INFO] Trying to continue anyway...")
             print()
             
-            # Step 5: Write NDEF Message (using ISO commands)
-            print("Step 5: Write NDEF Message")
-            print("-" * 70)
-            
-            try:
-                # First, select the NDEF file (required for ISO commands)
-                print("  Selecting NDEF file (0xE104)...")
-                select_ndef_apdu = [0x00, 0xA4, 0x02, 0x00, 0x02, 0xE1, 0x04, 0x00]
-                _, sw1, sw2 = card.send_apdu(select_ndef_apdu, use_escape=True)
-                if (sw1, sw2) in [(0x90, 0x00), (0x91, 0x00)]:
-                    print("  [OK] NDEF file selected")
-                else:
-                    print(f"  [WARN] File select returned {sw1:02X} {sw2:02X}")
-                
-                # Now write NDEF data
-                print(f"  Writing {len(ndef_message)} bytes to NDEF file...")
-                print("  [INFO] Using ISOUpdateBinary (CLA=00) - known to work on Seritag")
-                
-                write_cmd = WriteNdefMessage(ndef_data=ndef_message)
-                print(f"  Command: {write_cmd}")
-                
-                result = write_cmd.execute(card)
-                print(f"  [OK] {result}")
-                
-            except Exception as e:
-                print(f"  [ERROR] NDEF write failed: {e}")
-                import traceback
-                traceback.print_exc()
-            print()
-            
+            # Step 6: (removed - NDEF write moved to step 4)
             # Step 6: Verify (try to read counter)
             print("Step 6: Verify Provisioning")
             print("-" * 70)

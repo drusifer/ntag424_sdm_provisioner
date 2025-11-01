@@ -5,7 +5,7 @@ Simple tests to verify GetFileCounters command structure and basic functionality
 """
 
 import pytest
-from ntag424_sdm_provisioner.commands.sdm_commands import GetFileCounters
+from ntag424_sdm_provisioner.commands.get_file_counters import GetFileCounters
 from ntag424_sdm_provisioner.constants import APDUInstruction
 
 
@@ -47,7 +47,7 @@ class TestChangeFileSettings:
 def test_phase1_summary():
     """Summary: Phase 1 core commands are available"""
     # GetFileCounters
-    from ntag424_sdm_provisioner.commands.sdm_commands import GetFileCounters
+    from ntag424_sdm_provisioner.commands.get_file_counters import GetFileCounters
     cmd1 = GetFileCounters()
     assert str(cmd1) == "GetFileCounters(file_no=0x02)"
     

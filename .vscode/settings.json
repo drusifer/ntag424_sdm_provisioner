@@ -1,21 +1,7 @@
 {
-    "python.testing.pytestArgs": [
-        "."
-    ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
-    "python.analysis.generateWithTypeAnnotation": true,
-    "python.analysis.include": [
-        "${workspaceFolder}\\\\.venv\\\\Lib\\\\site-packages"
-    ],
-    "python.analysis.inlayHints.callArgumentNames": "partial",
-    "python.analysis.inlayHints.functionReturnTypes": true,
-    "python.analysis.inlayHints.pytestParameters": true,
-    "python.analysis.inlayHints.variableTypes": true,
-    "python.analysis.logLevel": "Trace",
-    "python-env.workspaceSearchPaths": [
-        ".venv"
-    ],
+    "python.testing.cwd": "${workspaceFolder}",
     "debugpy.showPythonInlineValues": true,
     "cSpell.words": [
         "Apdu",
@@ -31,11 +17,4 @@
         "unpad",
         "unpadded"
     ],
-    "cursorpyright.analysis.include": [
-        "${workspaceFolder}\\\\.venv\\\\Lib\\\\site-packages"
-    ],
-    "cursorpyright.analysis.inlayHints.callArgumentNames": "partial",
-    "cursorpyright.analysis.inlayHints.functionReturnTypes": true,
-    "cursorpyright.analysis.inlayHints.variableTypes": true,
-    "cursorpyright.analysis.logLevel": "Trace"
 }
