@@ -1,5 +1,5 @@
 from typing import Optional 
-from ntag424_sdm_provisioner.constants import SW_OK, CommMode, SuccessResponse, SDMConfiguration
+from ntag424_sdm_provisioner.constants import CommMode, SuccessResponse, SDMConfiguration
 from ntag424_sdm_provisioner.commands.base import ApduCommand, ApduError
 from ntag424_sdm_provisioner.commands.sdm_helpers import build_sdm_settings_payload
 from ntag424_sdm_provisioner.hal import NTag424CardConnection, hexb
@@ -44,12 +44,10 @@ class ChangeFileSettings(ApduCommand):
         log.debug(f"ChangeFileSettings APDU: {hexb(apdu)}")
         
         # Send command
-        _, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        if (sw1, sw2) != SW_OK:
-            raise ApduError(
-                f"ChangeFileSettings failed for file {self.config.file_no:02X}",
-                sw1, sw2
-            )
+        _, sw1, sw2 = self.send_command(
+            connection,
+            apdu,
+            allow_alternative_ok=False  # Only accept 0x9000 for file settings
+        )
         
         return SuccessResponse(f"File {self.config.file_no:02X} settings changed")

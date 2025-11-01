@@ -1,28 +1,50 @@
-# Current Step: Fix SDM Configuration for Game Coin Provisioning
+# Current Step: Command Architecture Refactoring - COMPLETE ✅
 
-TLDR; Refactoring complete ✅. Auth + NDEF write working ✅. Blocking issue: ChangeFileSettings returns 0x917E (length error). Goal: Debug and fix SDM configuration to enable tap-unique URLs.
+TLDR; Major refactoring complete ✅. Command base layer simplified with `send_command()`, enum constants with auto-formatting, `AuthenticatedConnection` pattern implemented, all 29 tests passing. Verified with real chip. Next: Resume SDM configuration debugging (ChangeFileSettings 0x917E error).
 
 ---
 
 ## Step Goal
 
-Fix ChangeFileSettings command to successfully enable SDM on NDEF file, allowing game coins to generate tap-unique authenticated URLs.
+**COMPLETED:** Refactor command architecture for better maintainability and cleaner API.
+
+**ACHIEVED:**
+1. ✅ Simplified command base layer with `send_command()`
+2. ✅ Enum constants with consistent `__str__()` formatting  
+3. ✅ AuthenticatedConnection context manager pattern
+4. ✅ Clean abstractions (no bitwise math in application code)
+5. ✅ All 29 tests passing
+6. ✅ Verified with real chip
+
+**NEXT:** Resume SDM configuration debugging (ChangeFileSettings 0x917E error)
 
 ---
 
-## Context
+## Refactoring Summary
 
-### What's Working ✅
-1. **Authentication** - Full EV2 auth with factory keys
-2. **NDEF Write** - Can write 87-byte URLs using ISOUpdateBinary
-3. **URL Building** - Proper NDEF structure with placeholders
-4. **KeyManager** - SimpleKeyManager provides keys
+### 1. Command Base Layer Enhancement
+- **Added `send_command()`**: Automatic multi-frame handling + error checking
+- **Removed `send_apdu()` wrapper**: Simplified architecture (one less layer)
+- **Refactored 11 commands**: ~50 lines duplicate code removed
+- **Uses reflection**: Command names in errors via `self.__class__.__name__`
 
-### What's Blocked ❌
-**SDM Configuration fails with 0x917E (NTAG_LENGTH_ERROR)**
-- Command: ChangeFileSettings
-- Error: Length error on Seritag NTAG424 DNA
-- Impact: Placeholders won't be replaced (not dynamic)
+### 2. Enum Constants for Status Words
+- **Created `StatusWordPair` enum**: Beautiful debug output
+- **Auto-formatting**: Shows `"SW_OK (0x9000)"` instead of `"(144, 0)"`
+- **Backward compatible**: Old tuple constants still work
+- **All enums updated**: Consistent `__str__()` across all enum classes
+
+### 3. AuthenticatedConnection Pattern
+- **Context manager**: Explicit authentication scope
+- **`AuthenticateEV2` command**: Returns `AuthenticatedConnection`
+- **Dual methods**: `send_apdu()` for plain, `send_authenticated_apdu()` for CMAC
+- **CommMode-aware**: Check file's CommMode before authenticating
+
+### 4. Clean Abstractions
+- **`FileSettingsResponse.get_comm_mode()`**: No bitwise math
+- **`FileSettingsResponse.requires_authentication()`**: Clean boolean
+- **`CommMode.from_file_option()`**: Enum extraction
+- **`CommMode.requires_auth()`**: Instance method
 
 ---
 

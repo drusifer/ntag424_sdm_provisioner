@@ -8,7 +8,7 @@ each time the file is read in unauthenticated mode with SDM enabled.
 from logging import getLogger
 
 from ntag424_sdm_provisioner.commands.base import ApduCommand, ApduError
-from ntag424_sdm_provisioner.constants import APDUInstruction, SW_OK, SW_OK_ALTERNATIVE
+from ntag424_sdm_provisioner.constants import APDUInstruction
 from ntag424_sdm_provisioner.hal import NTag424CardConnection, hexb
 
 log = getLogger(__name__)
@@ -69,13 +69,7 @@ class GetFileCounters(ApduCommand):
         
         log.debug(f"GetFileCounters APDU: {hexb(apdu)}")
         
-        data, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
-            raise ApduError(
-                f"GetFileCounters failed for file 0x{self.file_no:02X}",
-                sw1, sw2
-            )
+        data, sw1, sw2 = self.send_command(connection, apdu)
         
         # Parse counter (3 bytes, LSB first)
         if len(data) != 3:

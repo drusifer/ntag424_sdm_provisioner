@@ -1,7 +1,7 @@
 # file: ntag424_sdm_provisioner/constants.py
 
 from dataclasses import dataclass
-from enum import IntEnum, IntFlag
+from enum import Enum, IntEnum, IntFlag
 from typing import Final, Tuple, Optional
 
 # ============================================================================
@@ -82,15 +82,57 @@ class StatusWord(IntEnum):
         return f"{self.name} (0x{self.value:04X})"
 
 
-# Legacy tuple constants for backward compatibility
-SW_OK: Final[Tuple[int, int]] = (0x90, 0x00)
-SW_OK_ALTERNATIVE: Final[Tuple[int, int]] = (0x91, 0x00)
-SW_ADDITIONAL_FRAME: Final[Tuple[int, int]] = (0x91, 0xAF)
-SW_AUTH_FAILED: Final[Tuple[int, int]] = (0x91, 0x7E)  # Authentication failed
-SW_OPERATION_FAILED: Final[Tuple[int, int]] = (0x63, 0x00)
-SW_WRONG_LENGTH: Final[Tuple[int, int]] = (0x67, 0x00)
-SW_FUNC_NOT_SUPPORTED: Final[Tuple[int, int]] = (0x6A, 0x81)
-SW_FILE_NOT_FOUND: Final[Tuple[int, int]] = (0x6A, 0x82)
+class StatusWordPair(Enum):
+    """
+    Status word pairs as Enum for better code readability and debugging.
+    Each value is a (SW1, SW2) tuple that can be compared directly with tuples.
+    """
+    # Success codes
+    SW_OK = (0x90, 0x00)
+    SW_OK_ALTERNATIVE = (0x91, 0x00)
+    
+    # Chaining/continuation
+    SW_ADDITIONAL_FRAME = (0x91, 0xAF)
+    
+    # Common errors
+    SW_AUTH_FAILED = (0x91, 0x7E)
+    SW_OPERATION_FAILED = (0x63, 0x00)
+    SW_WRONG_LENGTH = (0x67, 0x00)
+    SW_FUNC_NOT_SUPPORTED = (0x6A, 0x81)
+    SW_FILE_NOT_FOUND = (0x6A, 0x82)
+    
+    def __eq__(self, other):
+        """Allow comparison with tuples: if (sw1, sw2) == StatusWordPair.SW_OK"""
+        if isinstance(other, tuple) and len(other) == 2:
+            return self.value == other
+        return super().__eq__(other)
+    
+    def __hash__(self):
+        """Make hashable for use in sets/dicts"""
+        return hash(self.value)
+    
+    def to_status_word(self) -> StatusWord:
+        """Convert to StatusWord enum"""
+        sw1, sw2 = self.value
+        return StatusWord.from_bytes(sw1, sw2)
+    
+    def __str__(self) -> str:
+        sw1, sw2 = self.value
+        return f"{self.name} (0x{sw1:02X}{sw2:02X})"
+    
+    def __repr__(self) -> str:
+        return f"StatusWordPair.{self.name}"
+
+
+# Export enum members as module-level constants for backward compatibility
+SW_OK = StatusWordPair.SW_OK
+SW_OK_ALTERNATIVE = StatusWordPair.SW_OK_ALTERNATIVE
+SW_ADDITIONAL_FRAME = StatusWordPair.SW_ADDITIONAL_FRAME
+SW_AUTH_FAILED = StatusWordPair.SW_AUTH_FAILED
+SW_OPERATION_FAILED = StatusWordPair.SW_OPERATION_FAILED
+SW_WRONG_LENGTH = StatusWordPair.SW_WRONG_LENGTH
+SW_FUNC_NOT_SUPPORTED = StatusWordPair.SW_FUNC_NOT_SUPPORTED
+SW_FILE_NOT_FOUND = StatusWordPair.SW_FILE_NOT_FOUND
 
 
 # ============================================================================
@@ -103,6 +145,9 @@ class APDUClass(IntEnum):
     PROPRIETARY = 0x80       # Proprietary class
     DESFIRE = 0x90           # DESFire native
     PSEUDO = 0xFF            # PC/SC pseudo-APDU (reader control)
+    
+    def __str__(self) -> str:
+        return f"{self.name} (0x{self.value:02X})"
 
 
 class APDUInstruction(IntEnum):
@@ -145,6 +190,9 @@ class APDUInstruction(IntEnum):
     GET_FIRMWARE_VERSION = 0x00
     GET_PICC_OPERATING_PARAMETER = 0x00
     SET_PICC_OPERATING_PARAMETER = 0x00
+    
+    def __str__(self) -> str:
+        return f"{self.name} (0x{self.value:02X})"
 
 
 # ============================================================================
@@ -158,7 +206,7 @@ class FileNo(IntEnum):
     PROPRIETARY_FILE = 0x03 # Proprietary data file (optional)
     
     def __str__(self) -> str:
-        return f"{self.name} (File {self.value})"
+        return f"{self.name} (0x{self.value:02X})"
 
 
 # ============================================================================
@@ -174,7 +222,7 @@ class KeyNo(IntEnum):
     KEY_4 = 0x04  # Key 4
     
     def __str__(self) -> str:
-        return f"{self.name} (Key {self.value})"
+        return f"{self.name} (0x{self.value:02X})"
 
 
 # Factory default
@@ -191,12 +239,32 @@ class CommMode(IntEnum):
     MAC = 0x01        # MACed
     FULL = 0x03       # Fully encrypted + MACed
     
+    # Mask for extracting CommMode from FileOption byte (bits [1:0])
+    COMM_MODE_MASK = 0x03
+    
     def __str__(self) -> str:
-        return self.name
+        return f"{self.name} (0x{self.value:02X})"
     
     def requires_auth(self) -> bool:
         """Check if this mode requires authentication."""
         return self in [CommMode.MAC, CommMode.FULL]
+    
+    @classmethod
+    def from_file_option(cls, file_option: int) -> 'CommMode':
+        """
+        Extract CommMode from FileOption byte.
+        
+        FileOption byte structure:
+        - Bit 6: SDM enabled
+        - Bits 1-0: CommMode
+        
+        Args:
+            file_option: FileOption byte value
+        
+        Returns:
+            CommMode enum value
+        """
+        return cls(file_option & cls.COMM_MODE_MASK)
 
 
 # ============================================================================
@@ -212,7 +280,7 @@ class FileType(IntEnum):
     CYCLIC_RECORD = 0x04
     
     def __str__(self) -> str:
-        return f"{self.name} (Type {self.value})"
+        return f"{self.name} (0x{self.value:02X})"
 
 
 # ============================================================================
@@ -231,14 +299,7 @@ class AccessRight(IntEnum):
     NEVER = 0xF   # Access denied
     
     def __str__(self) -> str:
-        if self.value <= 0x4:
-            return f"{self.name} (Key {self.value})"
-        elif self == AccessRight.FREE:
-            return f"{self.name} (No Auth Required)"
-        elif self == AccessRight.NEVER:
-            return f"{self.name} (Access Denied)"
-        else:
-            return f"{self.name} (Reserved {self.value:X})"
+        return f"{self.name} (0x{self.value:01X})"
 
 
 @dataclass
@@ -367,11 +428,10 @@ class NdefUriPrefix(IntEnum):
     FTP_ANON = 0x0D        # ftp://anonymous:anonymous@
     FTP = 0x0E             # ftp://
     FTPS = 0x0F            # ftps://
+    SFTP = 0x10            # sftp://
     
     def __str__(self) -> str:
-        return f"{self.name} (Prefix 0x{self.value:02X})"
-    
-    SFTP = 0x10            # sftp://
+        return f"{self.name} (0x{self.value:02X})"
 
 
 class NdefRecordType(IntEnum):
@@ -386,7 +446,7 @@ class NdefRecordType(IntEnum):
     RESERVED = 0x07
     
     def __str__(self) -> str:
-        return f"{self.name} (TNF {self.value})"
+        return f"{self.name} (0x{self.value:02X})"
 
 
 class NdefTLV(IntEnum):
@@ -399,7 +459,7 @@ class NdefTLV(IntEnum):
     TERMINATOR = 0xFE
     
     def __str__(self) -> str:
-        return f"{self.name} (TLV 0x{self.value:02X})"
+        return f"{self.name} (0x{self.value:02X})"
 
 
 # ============================================================================
@@ -437,7 +497,7 @@ class ErrorCategory(IntEnum):
     HARDWARE = 8           # Hardware error
     
     def __str__(self) -> str:
-        return f"{self.name} (Category {self.value})"
+        return f"{self.name} (0x{self.value:02X})"
 
 
 # Map status words to error categories
@@ -581,6 +641,26 @@ class FileSettingsResponse:
     enc_length: Optional[int] = None
     mac_offset: Optional[int] = None
     read_ctr_limit: Optional[int] = None
+    
+    def get_comm_mode(self) -> 'CommMode':
+        """
+        Get the communication mode for this file.
+        
+        Extracts CommMode from file_option bits [1:0].
+        
+        Returns:
+            CommMode enum value (PLAIN, MAC, or FULL)
+        """
+        return CommMode.from_file_option(self.file_option)
+    
+    def requires_authentication(self) -> bool:
+        """
+        Check if this file requires authentication for access.
+        
+        Returns:
+            True if CommMode is MAC or FULL
+        """
+        return self.get_comm_mode().requires_auth()
     
     def __str__(self) -> str:
         lines = [

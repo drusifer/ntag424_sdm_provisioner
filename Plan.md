@@ -1,6 +1,6 @@
 # NTAG424 SDM Provisioner - Implementation Plan
 
-TLDR; Authentication SOLVED ✅ (CBC mode fix). Ready for SDM/SUN provisioning for game coins. Implementation plan created: see `SDM_SUN_IMPLEMENTATION_PLAN.md` for complete 7-phase roadmap to provision coins with tap-unique authenticated URLs for server-side validation.
+TLDR; Architecture refactored ✅: Clean command base layer, enum auto-formatting, AuthenticatedConnection pattern, proper abstractions. 29/29 tests passing. Real chip verified. See `SDM_SUN_IMPLEMENTATION_PLAN.md` for SDM roadmap. See `LESSONS.md` for refactoring details.
 
 ---
 

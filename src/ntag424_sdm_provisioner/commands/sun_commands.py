@@ -6,7 +6,7 @@ without requiring complex EV2 authentication protocols.
 """
 from typing import List, Tuple, Optional
 from ntag424_sdm_provisioner.commands.base import ApduCommand, ApduError
-from ntag424_sdm_provisioner.constants import SW_OK, SuccessResponse
+from ntag424_sdm_provisioner.constants import SuccessResponse
 from ntag424_sdm_provisioner.hal import NTag424CardConnection, hexb
 from logging import getLogger
 
@@ -59,13 +59,7 @@ class WriteNdefMessage(ApduCommand):
         log.debug(f"WriteNdefMessage APDU: {hexb(apdu)}")
         
         # Send command
-        _, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        if (sw1, sw2) != SW_OK:
-            raise ApduError(
-                f"WriteNdefMessage failed for file {file_no:02X}",
-                sw1, sw2
-            )
+        _, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
         
         return SuccessResponse(f"NDEF message written ({data_length} bytes)")
 
@@ -114,13 +108,7 @@ class ReadNdefMessage(ApduCommand):
         log.debug(f"ReadNdefMessage APDU: {hexb(apdu)}")
         
         # Send command
-        data, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        if (sw1, sw2) != SW_OK:
-            raise ApduError(
-                f"ReadNdefMessage failed for file {file_no:02X}",
-                sw1, sw2
-            )
+        data, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
         
         return bytes(data)
 
@@ -186,13 +174,7 @@ class ConfigureSunSettings(ApduCommand):
         log.debug(f"ConfigureSunSettings APDU: {hexb(apdu)}")
         
         # Send command
-        _, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        if (sw1, sw2) != SW_OK:
-            raise ApduError(
-                f"ConfigureSunSettings failed for file {file_no:02X}",
-                sw1, sw2
-            )
+        _, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
         
         return SuccessResponse("SUN settings configured")
 

@@ -1,12 +1,18 @@
 """
 Base classes and constants for APDU commands.
 """
-from typing import Tuple, List, Any
+from typing import Tuple, List, Any, Optional, TYPE_CHECKING
 from abc import ABC, abstractmethod
+import logging
 from ntag424_sdm_provisioner.hal import NTag424CardConnection
 from ntag424_sdm_provisioner.constants import (
-    StatusWord, ErrorCategory, get_error_category, describe_status_word
+    StatusWord, StatusWordPair, ErrorCategory, get_error_category, describe_status_word
 )
+
+if TYPE_CHECKING:
+    from ntag424_sdm_provisioner.crypto.auth_session import Ntag424AuthSession
+
+log = logging.getLogger(__name__)
 
 
 class Ntag424Error(Exception):
@@ -62,6 +68,109 @@ class CommunicationError(Ntag424Error):
     pass
 
 
+class AuthenticatedConnection:
+    """
+    Wraps a card connection with an authenticated session.
+    
+    This class acts as a context manager and handles automatic CMAC
+    application for all authenticated commands.
+    
+    Usage:
+        with AuthenticateEV2(key).execute(connection) as auth_conn:
+            settings = GetFileSettings(file_no=2).execute(auth_conn)
+            key_ver = GetKeyVersion(key_no=0).execute(auth_conn)
+    """
+    
+    def __init__(self, connection: NTag424CardConnection, session: 'Ntag424AuthSession'):
+        """
+        Args:
+            connection: The underlying card connection
+            session: The authenticated session with session keys
+        """
+        self.connection = connection
+        self.session = session
+    
+    def __enter__(self) -> 'AuthenticatedConnection':
+        """Enter context manager."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        """Exit context manager."""
+        # Session cleanup could go here if needed
+        return False
+    
+    def send_apdu(self, apdu: List[int], use_escape: bool = False) -> Tuple[List[int], int, int]:
+        """
+        Send plain APDU without CMAC (for files with CommMode.PLAIN).
+        
+        This delegates directly to the underlying connection.
+        
+        Args:
+            apdu: APDU bytes to send
+            use_escape: Whether to use escape command
+        
+        Returns:
+            Tuple of (data, sw1, sw2)
+        """
+        return self.connection.send_apdu(apdu, use_escape=use_escape)
+    
+    def send_authenticated_apdu(
+        self,
+        cmd_header: bytes,
+        cmd_data: bytes,
+        use_escape: bool = False
+    ) -> Tuple[bytes, int, int]:
+        """
+        Send an authenticated APDU with automatic CMAC application.
+        
+        Handles:
+        1. Applies CMAC to command data
+        2. Sends APDU
+        3. Handles continuation frames with CMAC
+        4. Checks status word
+        
+        Args:
+            cmd_header: Command header (CLA INS P1 P2)
+            cmd_data: Command data to be authenticated
+            use_escape: Whether to use escape command for reader
+        
+        Returns:
+            Tuple of (response_data, sw1, sw2)
+        
+        Raises:
+            ApduError: If status word indicates error
+        """
+        # Apply CMAC to command data
+        authenticated_data = self.session.apply_cmac(cmd_header, cmd_data)
+        
+        # Build APDU: header + Lc + data + Le
+        apdu = list(cmd_header) + [len(authenticated_data)] + list(authenticated_data) + [0x00]
+        
+        # Send initial command
+        data, sw1, sw2 = self.connection.send_apdu(apdu, use_escape=use_escape)
+        
+        # Handle continuation frames with CMAC
+        full_response = bytearray(data)
+        while (sw1, sw2) == StatusWordPair.SW_ADDITIONAL_FRAME:
+            log.debug(f"Authenticated command: {StatusWordPair.SW_ADDITIONAL_FRAME}, fetching next frame...")
+            # GET_ADDITIONAL_FRAME with CMAC
+            af_header = bytes([0x90, 0xAF, 0x00, 0x00])
+            af_data = self.session.apply_cmac(af_header, b'')
+            af_apdu = list(af_header) + [len(af_data)] + list(af_data) + [0x00]
+            
+            data, sw1, sw2 = self.connection.send_apdu(af_apdu, use_escape=use_escape)
+            full_response.extend(data)
+        
+        # Check final status
+        if (sw1, sw2) not in [StatusWordPair.SW_OK, StatusWordPair.SW_OK_ALTERNATIVE]:
+            raise ApduError("Authenticated command failed", sw1, sw2)
+        
+        return bytes(full_response), sw1, sw2
+    
+    def __str__(self) -> str:
+        return f"AuthenticatedConnection(connection={self.connection})"
+
+
 class ApduCommand(ABC):
     """
     Abstract base class for all APDU commands.
@@ -85,11 +194,59 @@ class ApduCommand(ABC):
         """
         raise NotImplementedError
 
-    def send_apdu(self, connection: 'NTag424CardConnection', apdu: List[int]) -> Tuple[List[int], int, int]:
+    def send_command(
+        self,
+        connection: 'NTag424CardConnection',
+        apdu: List[int],
+        allow_alternative_ok: bool = True
+    ) -> Tuple[List[int], int, int]:
         """
-        A proxy method that calls the send_apdu method on the connection object.
-
-        This keeps the pyscard dependency out of the command classes.
+        High-level command send with automatic multi-frame handling and error checking.
+        
+        This method:
+        1. Sends the APDU directly via connection.send_apdu()
+        2. Automatically handles SW_ADDITIONAL_FRAME (0x91AF) responses by sending
+           GET_ADDITIONAL_FRAME (0x90AF0000) commands until complete
+        3. Checks that final status is SW_OK or SW_OK_ALTERNATIVE
+        4. Raises ApduError if status indicates failure
+        5. Returns complete response data and final status word
+        
+        Args:
+            connection: Card connection
+            apdu: APDU command bytes to send
+            allow_alternative_ok: If True, accept both SW_OK (0x9000) and 
+                                 SW_OK_ALTERNATIVE (0x9100) as success
+        
+        Returns:
+            Tuple of (data, sw1, sw2) where:
+                - data: Complete response data (all frames concatenated)
+                - sw1, sw2: Final status word bytes
+        
+        Raises:
+            ApduError: If final status word indicates error
         """
-        # This now calls the method on the connection object, fulfilling your design goal.
-        return connection.send_apdu(apdu, use_escape=self.use_escape)
+        # Send initial command directly to connection
+        data, sw1, sw2 = connection.send_apdu(apdu, use_escape=self.use_escape)
+        
+        # Collect full response if multiple frames
+        full_response = bytearray(data)
+        
+        # Handle additional frames (0x91AF)
+        while (sw1, sw2) == StatusWordPair.SW_ADDITIONAL_FRAME:
+            log.debug(f"Additional frame requested ({StatusWordPair.SW_ADDITIONAL_FRAME}), fetching next frame...")
+            # GET_ADDITIONAL_FRAME: CLA=0x90, INS=0xAF, P1=0x00, P2=0x00, Le=0x00
+            get_af_apdu = [0x90, 0xAF, 0x00, 0x00, 0x00]
+            data, sw1, sw2 = connection.send_apdu(get_af_apdu, use_escape=self.use_escape)
+            full_response.extend(data)
+        
+        # Check final status word
+        success_codes = [StatusWordPair.SW_OK]
+        if allow_alternative_ok:
+            success_codes.append(StatusWordPair.SW_OK_ALTERNATIVE)
+        
+        if (sw1, sw2) not in success_codes:
+            # Use reflection to get command class name
+            command_name = self.__class__.__name__
+            raise ApduError(f"{command_name} failed", sw1, sw2)
+        
+        return list(full_response), sw1, sw2

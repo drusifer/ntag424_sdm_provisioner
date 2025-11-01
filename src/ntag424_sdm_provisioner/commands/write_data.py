@@ -7,7 +7,7 @@ Writes data to a standard file on the NTAG424 DNA tag.
 from logging import getLogger
 
 from ntag424_sdm_provisioner.commands.base import ApduCommand, ApduError
-from ntag424_sdm_provisioner.constants import SuccessResponse, SW_OK, SW_OK_ALTERNATIVE
+from ntag424_sdm_provisioner.constants import SuccessResponse
 from ntag424_sdm_provisioner.hal import NTag424CardConnection
 
 log = getLogger(__name__)
@@ -57,8 +57,6 @@ class WriteData(ApduCommand):
             len(self.data) & 0xFF, (len(self.data) >> 8) & 0xFF, 0x00,
         ]
         apdu = [0x90, 0x3D, 0x00, 0x00, len(header) + len(self.data), *header, *self.data, 0x00]
-        _, sw1, sw2 = self.send_apdu(connection, apdu)
-        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
-            raise ApduError(f"Failed to write to file {self.file_no}", sw1, sw2)
+        _, sw1, sw2 = self.send_command(connection, apdu)
         return SuccessResponse(f"Wrote {len(self.data)} bytes to file 0x{self.file_no:02X}.")
 

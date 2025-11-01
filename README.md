@@ -1,20 +1,38 @@
 # **NTAG424 SDM Provisioner**
 
-TLDR; **Authentication SOLVED ✅** - CBC mode fix. Static URL NDEF provisioning works; Full chip diagnostic example (`examples/19_full_chip_diagnostic.py`); API refactored with dataclasses. Ready for SDM/SUN provisioning. Canonical docs: `SERITAG_INVESTIGATION_COMPLETE.md`, `Plan.md`, `ARCH.md`, `Requirements.md`, `CURRENT_STEP.md`.
+TLDR; **Architecture Refactored ✅** - Clean command layer with `send_command()`, enum auto-formatting, `AuthenticatedConnection` pattern, proper abstractions. 29/29 tests passing. Verified on real chip. See `LESSONS.md` for complete refactoring details. See `SDM_SUN_IMPLEMENTATION_PLAN.md` for SDM roadmap. Run commands: See `HOW_TO_RUN.md`.
 
 This project provides a Python-based toolkit for provisioning NXP NTAG424 DNA NFC tags for Secure Dynamic Messaging (SDM). It offers a modular, command-oriented framework for interacting with the tag at a low level, enabling developers to perform a full provisioning sequence from a factory-default state.
 
+## **Recent Updates (2025-11-01)**
+
+### Architecture Refactoring Complete ✅
+- **Clean Command Base Layer**: `send_command()` with auto multi-frame handling
+- **Enum Auto-Formatting**: All enums show `NAME (0xVALUE)` - no manual formatting needed
+- **AuthenticatedConnection Pattern**: Context manager for explicit auth scope
+- **Proper Abstractions**: `settings.get_comm_mode()`, `settings.requires_authentication()`
+- **Type-Safe**: Commands work with both regular and authenticated connections
+- **Test Coverage**: 29/29 tests passing, verified on real Seritag chip
+
+### Example - Clean API:
+```python
+with CardManager() as connection:
+    settings = GetFileSettings(file_no=2).execute(connection)
+    
+    if settings.requires_authentication():
+        with AuthenticateEV2(key).execute(connection) as auth_conn:
+            result = SomeCommand().execute(auth_conn)
+```
+
 ## **Features**
 
-* **Hardware Abstraction Layer (HAL):** A clean interface for communicating with PC/SC compliant NFC readers via pyscard.  
-* **Command-Oriented Architecture:** Each NTAG424 command is implemented as a distinct, reusable class, promoting modularity and extensibility.  
-* **Secure Session Management:** A high-level Ntag424Session class that handles the complex EV2 authentication handshake and session key derivation.  
-* **Full Provisioning Workflow:** The included examples demonstrate the complete process:  
-  1. Connecting to a tag.  
-  2. Authenticating with factory keys.  
-  3. Changing all 5 cryptographic keys to secure, random values.  
-  4. Configuring NDEF file settings for SDM with UID and read counter mirroring.  
-  5. Writing a dynamic NDEF URI for server-side verification.
+* **Hardware Abstraction Layer (HAL):** Clean interface for PC/SC compliant NFC readers via pyscard.  
+* **Command Architecture:** Each NTAG424 command as distinct class with automatic error handling and multi-frame support.  
+* **Authenticated Session Management:** Context manager pattern for EV2 authentication with automatic CMAC application.  
+* **Enum Constants:** Self-documenting enums with auto-formatting (e.g., `CommMode.PLAIN (0x00)`).  
+* **Type-Safe API:** Commands work with both `NTag424CardConnection` and `AuthenticatedConnection`.
+* **SDM Support:** Commands for GetFileCounters, ChangeFileSettings, NDEF building with placeholders.
+* **Examples:** 26+ working examples including authenticated connection pattern and chip diagnostics.
 
 ## **Prerequisites**
 

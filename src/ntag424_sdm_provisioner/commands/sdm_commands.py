@@ -2,9 +2,9 @@
 from logging import getLogger
 from typing import List, Optional
 
-from ntag424_sdm_provisioner.commands.base import ApduCommand, ApduError
+from ntag424_sdm_provisioner.commands.base import ApduCommand, ApduError, AuthenticatedConnection
 from ntag424_sdm_provisioner.constants import (
-    SW_ADDITIONAL_FRAME, SW_OK, SW_OK_ALTERNATIVE, APDUInstruction,
+    StatusWordPair, APDUInstruction,
     AuthenticationChallengeResponse, Ntag424VersionInfo, ReadDataResponse, SuccessResponse,
     FileSettingsResponse, KeyVersionResponse
 )
@@ -15,11 +15,9 @@ log = getLogger(__name__)
 
 class GetChipVersion(ApduCommand):
     """
-    Retrieves detailed version information from the NTAG424 DNA chip,
-    correctly handling chained responses.
+    Retrieves detailed version information from the NTAG424 DNA chip.
     """
     GET_VERSION_APDU = [0x90, 0x60, 0x00, 0x00, 0x00]
-    GET_ADDITIONAL_FRAME_APDU = [0x90, 0xAF, 0x00, 0x00, 0x00]
 
     def __init__(self):
         super().__init__(use_escape=True)
@@ -28,20 +26,8 @@ class GetChipVersion(ApduCommand):
         return "GetChipVersion()"
 
     def execute(self, connection: 'NTag424CardConnection') -> Ntag424VersionInfo:
-        # 1. Send the initial command
-        data, sw1, sw2 = self.send_apdu(connection, self.GET_VERSION_APDU)
-        
-        full_response = bytearray(data)
-
-        # 2. Loop as long as the card says "I have more data for you" (91 AF)
-        while (sw1, sw2) == SW_ADDITIONAL_FRAME:
-            # 3. Ask for the next chunk of data
-            log.info("Additional frame requested, sending GET ADDITIONAL FRAME...") 
-            data, sw1, sw2 = self.send_apdu(connection, self.GET_ADDITIONAL_FRAME_APDU)
-            full_response.extend(data)
-
-        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
-            raise ApduError("GetChipVersion failed on final frame", sw1, sw2) 
+        # send_command() handles multi-frame responses automatically
+        full_response, sw1, sw2 = self.send_command(connection, self.GET_VERSION_APDU) 
 
         # 5. Now parse the complete, assembled response
         # NTAG424 DNA GetVersion returns 28 or 29 bytes total:
@@ -115,9 +101,7 @@ class SelectPiccApplication(ApduCommand):
 
     def execute(self, connection: 'NTag424CardConnection') -> SuccessResponse:
         apdu = [0x00, 0xA4, 0x04, 0x00, len(self.PICC_AID), *self.PICC_AID, 0x00]
-        _, sw1, sw2 = self.send_apdu(connection, apdu)
-        if (sw1, sw2) != SW_OK:
-            raise ApduError("Failed to select PICC application", sw1, sw2)
+        _, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
         return SuccessResponse("PICC Application selected.")
 
 class AuthenticateEV2First(ApduCommand):
@@ -136,12 +120,14 @@ class AuthenticateEV2First(ApduCommand):
         log.debug(f"AuthenticateEV2First APDU: {[hex(x) for x in apdu]}")
         log.debug(f"Requesting challenge for key number: {self.key_no}")
         
-        data, sw1, sw2 = self.send_apdu(connection, apdu)
+        # Special case: This command expects SW_ADDITIONAL_FRAME as success, not error
+        # So we can't use send_command() and must call connection.send_apdu() directly
+        data, sw1, sw2 = connection.send_apdu(apdu, use_escape=self.use_escape)
         log.debug(f"Response: data={len(data)} bytes, SW={sw1:02X}{sw2:02X}")
         
-        if (sw1, sw2) != SW_ADDITIONAL_FRAME:
+        if (sw1, sw2) != StatusWordPair.SW_ADDITIONAL_FRAME:
             log.error(f"AuthenticateEV2First failed with SW={sw1:02X}{sw2:02X}")
-            log.error(f"Expected SW=91AF, got SW={sw1:02X}{sw2:02X}")
+            log.error(f"Expected {StatusWordPair.SW_ADDITIONAL_FRAME}, got SW={sw1:02X}{sw2:02X}")
             raise ApduError("AuthenticateEV2First failed", sw1, sw2)
         
         # Phase 1 returns SW=91AF with encrypted RndB (16 bytes)
@@ -159,6 +145,63 @@ class AuthenticateEV2First(ApduCommand):
         log.debug(f"Successfully received challenge: {encrypted_rndb.hex().upper()}")
         return AuthenticationChallengeResponse(key_no_used=self.key_no, challenge=encrypted_rndb)
 
+
+class AuthenticateEV2(ApduCommand):
+    """
+    Complete EV2 authentication command that returns an AuthenticatedConnection.
+    
+    This is a high-level command that performs both authentication phases
+    and returns a context manager for authenticated operations.
+    
+    Usage:
+        key = get_key()
+        with CardManager() as connection:
+            with AuthenticateEV2(key).execute(connection) as auth_conn:
+                settings = GetFileSettings(file_no=2).execute(auth_conn)
+                key_ver = GetKeyVersion(key_no=0).execute(auth_conn)
+    """
+    
+    def __init__(self, key: bytes, key_no: int = 0, use_escape: bool = True):
+        """
+        Args:
+            key: 16-byte AES key for authentication
+            key_no: Key number to authenticate with (0-4)
+            use_escape: Whether to use escape commands (needed for ACR122U)
+        """
+        super().__init__(use_escape)
+        self.key = key
+        self.key_no = key_no
+    
+    def __str__(self) -> str:
+        return f"AuthenticateEV2(key_no=0x{self.key_no:02X})"
+    
+    def execute(self, connection: NTag424CardConnection) -> AuthenticatedConnection:
+        """
+        Perform complete EV2 authentication and return authenticated connection.
+        
+        Args:
+            connection: Card connection to authenticate
+        
+        Returns:
+            AuthenticatedConnection context manager with session keys
+        
+        Raises:
+            ApduError: If authentication fails
+        """
+        from ntag424_sdm_provisioner.crypto.auth_session import Ntag424AuthSession
+        
+        log.info(f"Performing EV2 authentication with key {self.key_no}")
+        
+        # Create session and authenticate
+        session = Ntag424AuthSession(self.key)
+        session.authenticate(connection, key_no=self.key_no)
+        
+        log.info(f"Authentication successful, session established")
+        
+        # Return authenticated connection wrapper
+        return AuthenticatedConnection(connection, session)
+
+
 class AuthenticateEV2Second(ApduCommand):
     """Completes the second phase of an EV2 authentication."""
     def __init__(self, data_to_card: bytes):
@@ -172,22 +215,8 @@ class AuthenticateEV2Second(ApduCommand):
 
     def execute(self, connection: 'NTag424CardConnection') -> bytes:
         apdu = [0x90, 0xAF, 0x00, 0x00, len(self.data_to_card), *self.data_to_card, 0x00]
-        data, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        # Check if Phase 2 returns additional frames (like Phase 1)
-        full_response = bytearray(data)
-        
-        # Loop as long as the card says "I have more data for you" (91 AF)
-        while (sw1, sw2) == SW_ADDITIONAL_FRAME:
-            log.info("AuthenticateEV2Second: Additional frame requested, sending GET ADDITIONAL FRAME...")
-            af_apdu = [0x90, 0xAF, 0x00, 0x00, 0x00]
-            data, sw1, sw2 = self.send_apdu(connection, af_apdu)
-            full_response.extend(data)
-        
-        # Accept both SW_OK (0x9000) and SW_OK_ALTERNATIVE (0x9100) as success
-        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
-            raise ApduError("AuthenticateEV2Second failed", sw1, sw2)
-        
+        # send_command() handles multi-frame and status checking automatically
+        full_response, sw1, sw2 = self.send_command(connection, apdu)
         return bytes(full_response)  # Return the card's encrypted response data
 
 class ChangeKey(ApduCommand):
@@ -204,9 +233,7 @@ class ChangeKey(ApduCommand):
 
     def execute(self, connection: 'NTag424CardConnection') -> SuccessResponse:
         apdu = [0x90, 0xC4, 0x00, 0x00, len(self.data_to_card), *self.data_to_card]
-        _, sw1, sw2 = self.send_apdu(connection, apdu)
-        if (sw1, sw2) != SW_OK:
-            raise ApduError(f"Failed to change key number {self.key_no}", sw1, sw2)
+        _, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
         return SuccessResponse(f"Key 0x{self.key_no:02X} changed successfully.")
 
 class GetFileIds(ApduCommand):
@@ -220,90 +247,82 @@ class GetFileIds(ApduCommand):
     
     def execute(self, connection: 'NTag424CardConnection') -> List[int]:
         apdu = [0x90, 0x6F, 0x00, 0x00, 0x00]
-        data, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
-            raise ApduError("GetFileIds failed", sw1, sw2)
-        
+        data, sw1, sw2 = self.send_command(connection, apdu)
         return list(data)
 
 
 class GetFileSettings(ApduCommand):
-    """Get settings for a specific file. Requires authentication for CommMode.MAC."""
+    """
+    Get settings for a specific file.
     
-    def __init__(self, file_no: int, session: Optional['Ntag424AuthSession'] = None):
+    Can be called with regular or authenticated connection.
+    Most files allow reading settings without authentication (CommMode.PLAIN).
+    """
+    
+    def __init__(self, file_no: int):
         super().__init__(use_escape=True)
         self.file_no = file_no
-        self.session = session
     
     def __str__(self) -> str:
         return f"GetFileSettings(file_no=0x{self.file_no:02X})"
     
     def execute(self, connection: 'NTag424CardConnection') -> FileSettingsResponse:
-        from ntag424_sdm_provisioner.crypto.auth_session import Ntag424AuthSession
+        """
+        Execute command. Works with both regular and authenticated connections.
         
-        # Build base command
-        cmd_header = bytes([0x90, 0xF5, 0x00, 0x00])
-        cmd_data = bytes([self.file_no])
+        Args:
+            connection: NTag424CardConnection or AuthenticatedConnection
         
-        # Apply CMAC if session provided (required for CommMode.MAC)
-        if self.session:
-            cmd_data = self.session.apply_cmac(cmd_header, cmd_data)
+        Returns:
+            FileSettingsResponse with parsed file settings
         
-        # Build APDU
-        apdu = list(cmd_header) + [len(cmd_data)] + list(cmd_data) + [0x00]
+        Raises:
+            ApduError: If command fails
+        """
+        # Build command - GetFileSettings typically doesn't need CMAC (CommMode.PLAIN)
+        # Just send plain APDU
+        apdu = [0x90, 0xF5, 0x00, 0x00, 0x01, self.file_no, 0x00]
         
-        data, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        # Handle additional frames
-        full_response = bytearray(data)
-        while (sw1, sw2) == SW_ADDITIONAL_FRAME:
-            log.info("GetFileSettings: Additional frame requested, sending GET ADDITIONAL FRAME...")
-            af_header = bytes([0x90, 0xAF, 0x00, 0x00])
-            af_data = b''
-            if self.session:
-                af_data = self.session.apply_cmac(af_header, af_data)
-            af_apdu = list(af_header) + [len(af_data)] + list(af_data) + [0x00]
-            
-            data, sw1, sw2 = self.send_apdu(connection, af_apdu)
-            full_response.extend(data)
-        
-        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
-            raise ApduError(f"GetFileSettings failed for file 0x{self.file_no:02X}", sw1, sw2)
+        # Use send_command for automatic multi-frame handling
+        data, sw1, sw2 = self.send_command(connection, apdu)
         
         # Parse and return structured response
-        return parse_file_settings(self.file_no, bytes(full_response))
+        return parse_file_settings(self.file_no, bytes(data))
 
 
 class GetKeyVersion(ApduCommand):
-    """Get version of a specific key. Requires authentication with CommMode.MAC."""
+    """
+    Get version of a specific key.
     
-    def __init__(self, key_no: int, session: Optional['Ntag424AuthSession'] = None):
+    Typically requires authentication (CommMode.MAC), but works with
+    both regular and authenticated connections.
+    """
+    
+    def __init__(self, key_no: int):
         super().__init__(use_escape=True)
         self.key_no = key_no
-        self.session = session
     
     def __str__(self) -> str:
         return f"GetKeyVersion(key_no=0x{self.key_no:02X})"
     
     def execute(self, connection: 'NTag424CardConnection') -> KeyVersionResponse:
-        from ntag424_sdm_provisioner.crypto.auth_session import Ntag424AuthSession
+        """
+        Execute command. Try without auth first, use auth if needed.
         
-        # Build base command
-        cmd_header = bytes([0x90, 0x64, 0x00, 0x00])
-        cmd_data = bytes([self.key_no])
+        Args:
+            connection: NTag424CardConnection or AuthenticatedConnection
         
-        # Apply CMAC if session provided (required for CommMode.MAC)
-        if self.session:
-            cmd_data = self.session.apply_cmac(cmd_header, cmd_data)
+        Returns:
+            KeyVersionResponse with key version info
         
-        # Build APDU
-        apdu = list(cmd_header) + [len(cmd_data)] + list(cmd_data) + [0x00]
+        Raises:
+            ApduError: If command fails
+        """
+        # Build command - try plain first
+        apdu = [0x90, 0x64, 0x00, 0x00, 0x01, self.key_no, 0x00]
         
-        data, sw1, sw2 = self.send_apdu(connection, apdu)
-        
-        if (sw1, sw2) not in [SW_OK, SW_OK_ALTERNATIVE]:
-            raise ApduError(f"GetKeyVersion failed for key 0x{self.key_no:02X}", sw1, sw2)
+        # Use send_command for automatic multi-frame handling
+        data, sw1, sw2 = self.send_command(connection, apdu)
         
         # Parse and return structured response
         return parse_key_version(self.key_no, bytes(data))
