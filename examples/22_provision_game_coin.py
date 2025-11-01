@@ -24,13 +24,13 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
 from ntag424_sdm_provisioner.hal import CardManager
-from ntag424_sdm_provisioner.commands import (
+from ntag424_sdm_provisioner.commands.sdm_commands import (
     SelectPiccApplication,
     GetChipVersion,
-    GetFileCounters,
-    WriteData,
-    ChangeFileSettings,
 )
+from ntag424_sdm_provisioner.commands.get_file_counters import GetFileCounters
+from ntag424_sdm_provisioner.commands.write_data import WriteData
+from ntag424_sdm_provisioner.commands.change_file_settings import ChangeFileSettings
 from ntag424_sdm_provisioner.commands.sun_commands import WriteNdefMessage
 from ntag424_sdm_provisioner.commands.base import ApduError
 from ntag424_sdm_provisioner.commands.sdm_helpers import build_ndef_uri_record, calculate_sdm_offsets

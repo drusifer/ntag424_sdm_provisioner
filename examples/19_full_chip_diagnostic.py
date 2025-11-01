@@ -21,8 +21,8 @@ from ntag424_sdm_provisioner.commands.sdm_commands import (
     GetFileIds,
     GetFileSettings,
     GetKeyVersion,
-    ReadData,
 )
+from ntag424_sdm_provisioner.commands.read_data import ReadData
 from ntag424_sdm_provisioner.crypto.auth_session import Ntag424AuthSession
 from ntag424_sdm_provisioner.constants import (
     FACTORY_KEY,
@@ -121,7 +121,7 @@ def read_file_list(card):
     for file_id in known_files:
         try:
             # Try GetFileSettings to see if file exists (might require auth, but we'll catch that)
-            cmd = GetFileSettings(file_no=file_id, session=None)
+            cmd = GetFileSettings(file_no=file_id)
             cmd.execute(card)
             existing_files.append(file_id)
             file_name = {
@@ -159,7 +159,7 @@ def read_file_settings(card, file_ids: List[int], session: Optional[Ntag424AuthS
         print_subsection(f"File 0x{file_id:02X} Settings")
         
         try:
-            cmd = GetFileSettings(file_no=file_id, session=session)
+            cmd = GetFileSettings(file_no=file_id)
             settings = cmd.execute(card)
             
             print("[OK] File settings retrieved")

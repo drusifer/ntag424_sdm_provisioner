@@ -505,5 +505,41 @@ if needs_auth:
 
 ---
 
+### Examples Cleanup - ✅ COMPLETE
+**Date:** 2025-11-01
+
+**Goal:** Remove obsolete examples and update remaining ones to use new APIs.
+
+**Deleted (11 obsolete examples):**
+- 23_debug_sdm_config.py - Temporary debug script
+- 24_debug_change_file_settings.py - Temporary debug script
+- 04_change_key.py - Duplicate functionality
+- 05_provision_sdm.py - Obsolete, replaced by 22_provision_game_coin.py
+- 06-08 (SUN examples) - SUN not our focus, SDM is
+- 09_write_ndef.py - Covered in newer examples
+- 11_ndef_initialization.py - Investigation file
+- 13_working_ndef.py - Covered elsewhere
+- 14_read_sun_after_tap.py - SUN investigation
+
+**Updated (2 core examples):**
+- 19_full_chip_diagnostic.py - Fixed imports, removed session parameters
+- 22_provision_game_coin.py - Fixed imports for moved commands
+
+**Remaining Core Examples (10):**
+1. `01_connect.py` - Basic connection
+2. `02_get_version.py` - Get chip version
+3. `04_authenticate.py` - Authentication demo
+4. `10_auth_session.py` - Auth session usage
+5. `19_full_chip_diagnostic.py` - Complete chip diagnostic ✅ UPDATED
+6. `20_get_file_counters.py` - GetFileCounters command
+7. `21_build_sdm_url.py` - SDM URL building
+8. `22_provision_game_coin.py` - Complete provisioning ✅ UPDATED
+9. `25_get_current_file_settings.py` - File settings
+10. `26_authenticated_connection_pattern.py` - NEW! Auth pattern demo
+
+**Result:** Clean examples directory focusing on core functionality
+
+---
+
 **Last Updated:** 2025-11-01
 
