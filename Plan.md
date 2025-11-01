@@ -1,6 +1,6 @@
 # NTAG424 SDM Provisioner - Implementation Plan
 
-TLDR; Static URL provisioning is working now on Seritag (no auth). SDM/SUN remains blocked by Seritag Phase 2 behavior (SW=91AE) despite spec-correct implementation. Proceed with static URL for production while continuing Seritag-specific auth research.
+TLDR; Authentication SOLVED ✅ (CBC mode fix). Ready for SDM/SUN provisioning for game coins. Implementation plan created: see `SDM_SUN_IMPLEMENTATION_PLAN.md` for complete 7-phase roadmap to provision coins with tap-unique authenticated URLs for server-side validation.
 
 ---
 
