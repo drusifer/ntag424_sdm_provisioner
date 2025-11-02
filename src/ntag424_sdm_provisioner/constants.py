@@ -710,19 +710,59 @@ class KeyVersionResponse:
 # ============================================================================
 
 @dataclass
+class SDMOffsets:
+    """SDM offset configuration with sane defaults."""
+    uid_offset: int = 0
+    read_ctr_offset: int = 0
+    picc_data_offset: int = 0
+    mac_input_offset: int = 0
+    mac_offset: int = 0
+    enc_offset: int = 0
+    
+    def __str__(self) -> str:
+        parts = []
+        if self.uid_offset:
+            parts.append(f"UID@{self.uid_offset}")
+        if self.read_ctr_offset:
+            parts.append(f"CTR@{self.read_ctr_offset}")
+        if self.mac_offset:
+            parts.append(f"MAC@{self.mac_offset}")
+        return ", ".join(parts) if parts else "No offsets"
+
+
+@dataclass
 class SDMConfiguration:
     """Configuration for Secure Dynamic Messaging."""
     file_no: int
     comm_mode: 'CommMode'
-    access_rights: bytes
+    access_rights: 'AccessRights'  # Type changed from bytes to AccessRights
     enable_sdm: bool
     sdm_options: int
-    picc_data_offset: int
-    mac_input_offset: int
-    mac_offset: int
-    enc_data_offset: Optional[int] = None
-    enc_data_length: Optional[int] = None
-    read_ctr_offset: Optional[int] = None
+    offsets: SDMOffsets = None  # Dataclass instead of individual fields
+    
+    def __post_init__(self):
+        """Validate and normalize configuration."""
+        # Convert bytes to AccessRights if needed (backward compatibility)
+        if isinstance(self.access_rights, bytes):
+            self.access_rights = AccessRights.from_bytes(self.access_rights)
+        
+        # Ensure offsets is SDMOffsets
+        if self.offsets is None:
+            self.offsets = SDMOffsets()
+        elif isinstance(self.offsets, dict):
+            # Backward compatibility: convert dict to SDMOffsets
+            self.offsets = SDMOffsets(
+                uid_offset=self.offsets.get('uid_offset', 0),
+                read_ctr_offset=self.offsets.get('read_ctr_offset', 0),
+                picc_data_offset=self.offsets.get('picc_data_offset', 0),
+                mac_input_offset=self.offsets.get('mac_input_offset', 0),
+                mac_offset=self.offsets.get('mac_offset', 0),
+                enc_offset=self.offsets.get('enc_offset', 0),
+            )
+    
+    def get_access_rights_bytes(self) -> bytes:
+        """Get access rights as bytes (internal encoding)."""
+        return self.access_rights.to_bytes()
 
 
 @dataclass

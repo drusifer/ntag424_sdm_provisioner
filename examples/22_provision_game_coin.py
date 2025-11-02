@@ -27,20 +27,25 @@ from ntag424_sdm_provisioner.hal import CardManager
 from ntag424_sdm_provisioner.commands.sdm_commands import (
     SelectPiccApplication,
     GetChipVersion,
+    AuthenticateEV2,
 )
 from ntag424_sdm_provisioner.commands.get_file_counters import GetFileCounters
 from ntag424_sdm_provisioner.commands.write_data import WriteData
 from ntag424_sdm_provisioner.commands.change_file_settings import ChangeFileSettings
 from ntag424_sdm_provisioner.commands.sun_commands import WriteNdefMessage
+from ntag424_sdm_provisioner.commands.iso_commands import ISOSelectFile, ISOFileID
 from ntag424_sdm_provisioner.commands.base import ApduError
 from ntag424_sdm_provisioner.commands.sdm_helpers import build_ndef_uri_record, calculate_sdm_offsets
 from ntag424_sdm_provisioner.constants import (
     SDMUrlTemplate,
     SDMConfiguration,
+    SDMOffsets,
     CommMode,
     FileOption,
+    AccessRight,
+    AccessRights,
+    FACTORY_KEY,
 )
-from ntag424_sdm_provisioner.crypto.auth_session import Ntag424AuthSession
 from ntag424_sdm_provisioner.key_manager_interface import SimpleKeyManager, KEY_DEFAULT_FACTORY
 
 
@@ -69,14 +74,8 @@ def provision_game_coin():
             print("Step 1: Get Chip Information")
             print("-" * 70)
             
-            try:
-                SelectPiccApplication().execute(card)
-                print("  [OK] Application selected")
-            except ApduError as e:
-                if "6985" in str(e):
-                    print("  [INFO] Application already selected")
-                else:
-                    raise
+            SelectPiccApplication().execute(card)
+            print("  [OK] Application selected")
             
             version_info = GetChipVersion().execute(card)
             print(f"  Chip: {version_info}")
@@ -86,7 +85,7 @@ def provision_game_coin():
             # Step 2: Define URL template
             print("Step 2: Build SDM URL Template")
             print("-" * 70)
-            
+            base_url = "https://script.google.com/macros/s/AKfycbz2gCQYl_OjEJB26jiUL8253I0bX4czxykkcmt-MnF41lIyX18SLkRgUcJ_VJRJbiwh/exec"
             base_url = "https://globalheadsandtails.com/tap"
             uid_placeholder = "00000000000000"      # 7 bytes
             counter_placeholder = "000000"           # 3 bytes
@@ -117,35 +116,14 @@ def provision_game_coin():
             )
             
             offsets = calculate_sdm_offsets(template)
-            print("  SDM Offsets:")
-            for key, value in offsets.items():
-                print(f"    {key}: {value}")
+            print(f"  SDM Offsets: {offsets}")
             print()
             
-            # Step 3: Authenticate (using factory keys)
-            print("Step 3: Authenticate with Tag")
+            # Step 3: Note about authentication
+            print("Step 3: Authentication")
             print("-" * 70)
-            
-            # Create key manager (using factory keys for now)
-            key_mgr = SimpleKeyManager(factory_key=KEY_DEFAULT_FACTORY)
-            print(f"  Key Manager: {key_mgr}")
-            
-            # Get key for this tag (key 0 = Application Master Key)
-            auth_key = key_mgr.get_key(version_info.uid, key_no=0)
-            print(f"  Using Key: {'00'*16} (factory default)")
-            
-            # Create auth session
-            try:
-                print("  Authenticating...")
-                session = Ntag424AuthSession(auth_key)
-                session_keys = session.authenticate(card, key_no=0)
-                print(f"  [OK] Authenticated successfully!")
-                print(f"  Session ENC Key: {session_keys.session_enc_key.hex()[:16]}...")
-                print(f"  Session MAC Key: {session_keys.session_mac_key.hex()[:16]}...")
-            except Exception as e:
-                print(f"  [ERROR] Authentication failed: {e}")
-                print("  [INFO] Continuing with unauthenticated operations")
-                session = None
+            print("  [INFO] Authentication will be performed when needed for SDM config")
+            print("  [INFO] Using factory key (all zeros)")
             print()
             
             # Step 4: Write NDEF Message FIRST (before enabling SDM)
@@ -153,78 +131,68 @@ def provision_game_coin():
             print("-" * 70)
             print("  [INFO] Writing NDEF before enabling SDM (data must exist first)")
             
-            try:
-                # Select NDEF file
-                print("  Selecting NDEF file (0xE104)...")
-                select_ndef_apdu = [0x00, 0xA4, 0x02, 0x00, 0x02, 0xE1, 0x04, 0x00]
-                _, sw1, sw2 = card.send_apdu(select_ndef_apdu, use_escape=True)
-                if (sw1, sw2) in [(0x90, 0x00), (0x91, 0x00)]:
-                    print("  [OK] NDEF file selected")
-                
-                # Write NDEF data
-                print(f"  Writing {len(ndef_message)} bytes to NDEF file...")
-                write_cmd = WriteNdefMessage(ndef_data=ndef_message)
-                result = write_cmd.execute(card)
-                print(f"  [OK] {result}")
-                
-            except Exception as e:
-                print(f"  [ERROR] NDEF write failed: {e}")
-                import traceback
-                traceback.print_exc()
+            # Select NDEF file using ISO command
+            print("  Selecting NDEF file...")
+            select_result = ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
+            print(f"  [OK] {select_result}")
+            
+            # Write NDEF data
+            print(f"  Writing {len(ndef_message)} bytes...")
+            write_cmd = WriteNdefMessage(ndef_data=ndef_message)
+            result = write_cmd.execute(card)
+            print(f"  [OK] {result}")
             print()
             
-            # Step 5: Configure SDM (requires authentication AND data written)
-            print("Step 5: Configure SDM on NDEF File")
+            # Step 5: Configure SDM with Authentication
+            print("Step 5: Configure SDM with Authentication")
             print("-" * 70)
             
-            if session is None:
-                print("  [SKIP] Cannot configure SDM without authentication")
-                print("  [INFO] SDM configuration requires authenticated session")
-            else:
-                try:
-                    # Build SDM configuration
-                    sdm_config = SDMConfiguration(
-                        file_no=0x02,  # NDEF file
-                        comm_mode=CommMode.PLAIN,  # Plain communication
-                        access_rights=b'\xE0\xEE',  # 2 bytes
-                        enable_sdm=True,
-                        sdm_options=(
-                            FileOption.UID_MIRROR |   # Bit 7
-                            FileOption.READ_COUNTER   # Bit 6 (now correct!)
-                        ),
-                        picc_data_offset=offsets.get('picc_data_offset', 0),
-                        mac_input_offset=offsets.get('mac_input_offset', 0),
-                        mac_offset=offsets.get('mac_offset', 0),
-                        read_ctr_offset=offsets.get('read_ctr_offset', 0),
-                    )
-                    
-                    print(f"  SDM Config: {sdm_config}")
-                    print("  Configuring...")
-                    
-                    config_cmd = ChangeFileSettings(sdm_config)
-                    config_cmd.execute(card, session=session)
-                    print("  [OK] SDM configured successfully!")
-                    
-                except Exception as e:
-                    print(f"  [ERROR] SDM configuration failed: {e}")
-                    print("  [INFO] Trying to continue anyway...")
+            # ChangeFileSettings requires authentication for CommMode.MAC/FULL
+            print("  Authenticating with factory key...")
+            
+            # Use new AuthenticateEV2 pattern with context manager
+            with AuthenticateEV2(FACTORY_KEY, key_no=0).execute(card) as auth_conn:
+                print(f"  [OK] Authenticated")
+                print()
+                
+                # Build SDM configuration
+                # Access rights: Read=FREE (anyone can read), Write=KEY_0 (auth required), 
+                #                RW=FREE, Change=FREE (for this example)
+                access_rights = AccessRights(
+                    read=AccessRight.FREE,
+                    write=AccessRight.KEY_0,
+                    read_write=AccessRight.FREE,
+                    change=AccessRight.FREE
+                )
+                
+                sdm_config = SDMConfiguration(
+                    file_no=0x02,  # NDEF file
+                    comm_mode=CommMode.PLAIN,  # Plain communication
+                    access_rights=access_rights,  # SDMConfiguration handles encoding
+                    enable_sdm=True,
+                    sdm_options=(
+                        FileOption.UID_MIRROR |   # Bit 7
+                        FileOption.READ_COUNTER   # Bit 6 (now correct!)
+                    ),
+                    offsets=offsets  # SDMOffsets dataclass instead of individual fields
+                )
+                
+                print(f"  SDM Config: {sdm_config}")
+                print("  Configuring...")
+                
+                # ChangeFileSettings with authenticated session
+                config_cmd = ChangeFileSettings(sdm_config)
+                config_cmd.execute(card, session=auth_conn.session)
+                print("  [OK] SDM configured successfully!")
             print()
             
-            # Step 6: (removed - NDEF write moved to step 4)
             # Step 6: Verify (try to read counter)
             print("Step 6: Verify Provisioning")
             print("-" * 70)
             
-            try:
-                counter = GetFileCounters(file_no=0x02).execute(card)
-                print(f"  [OK] SDM counter: {counter}")
-                print("  [SUCCESS] SDM appears to be already configured!")
-            except ApduError as e:
-                if "911C" in str(e):
-                    print("  [INFO] SDM not yet enabled (expected)")
-                    print("  [INFO] Counter will work after SDM configuration")
-                else:
-                    print(f"  [WARN] Unexpected error: {e}")
+            counter = GetFileCounters(file_no=0x02).execute(card)
+            print(f"  [OK] SDM counter: {counter}")
+            print("  [SUCCESS] Provisioning complete!")
             print()
             
             # Summary
@@ -232,42 +200,28 @@ def provision_game_coin():
             print("Provisioning Summary")
             print("=" * 70)
             print()
-            print("Provisioning Steps Executed:")
-            print("  [OK] Tag detected and identified")
-            print("  [OK] URL template created (87 bytes)")
-            print("  [OK] NDEF message built")
-            print("  [OK] SDM offsets calculated")
-            print(f"  {'[OK]' if session else '[SKIP]'} Authentication")
-            print(f"  {'[OK]' if session else '[SKIP]'} SDM configuration")
-            print("  [OK] NDEF write")
+            print("SUCCESS! Your game coin is provisioned.")
             print()
-            
-            if session:
-                print("SUCCESS! Your game coin is provisioned.")
-                print()
-                print("Tapping the coin will now generate:")
-                print(f"  {base_url}?uid={version_info.uid.hex().upper()}&ctr=XXXXXX&cmac=XXXXXXXXXXXXXXXX")
-                print()
-                print("Next Steps:")
-                print("  1. Tap coin with NFC phone")
-                print("  2. Phone browser opens with tap-unique URL")
-                print("  3. Implement server validation endpoint")
-                print("  4. Server verifies CMAC and counter")
-                print("  5. Deliver game reward!")
-            else:
-                print("Authentication required for SDM configuration.")
-                print()
-                print("To complete provisioning:")
-                print("  1. Ensure tag has factory default keys")
-                print("  2. Re-run this script")
-                print("  3. Authentication should succeed")
+            print("Tapping the coin will now generate:")
+            print(f"  {base_url}?uid={version_info.uid.hex().upper()}&ctr=XXXXXX&cmac=XXXXXXXXXXXXXXXX")
+            print()
+            print("Next Steps:")
+            print("  1. Tap coin with NFC phone")
+            print("  2. Phone browser opens with tap-unique URL")
+            print("  3. Implement server validation endpoint")
+            print("  4. Server verifies CMAC and counter")
+            print("  5. Deliver game reward!")
             print()
             
     except KeyboardInterrupt:
         print("\n\n[INTERRUPTED] Stopped by user")
         return 1
-    except Exception as e:
+    except ApduError as e:
+        # Catches all APDU errors (including specific subclasses)
         print(f"\n[ERROR] {e}")
+        return 1
+    except Exception as e:
+        print(f"\n[ERROR] Unexpected error: {e}")
         import traceback
         traceback.print_exc()
         return 1

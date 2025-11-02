@@ -4,6 +4,67 @@ This file tracks failed attempts, issues encountered, and solutions during SDM/S
 
 ---
 
+## 2025-11-02: API Design - Encapsulation and Pythonic Defaults
+
+### Issue
+Configuration APIs exposed too much implementation detail:
+- `SDMConfiguration` accepted raw bytes for `access_rights` (e.g., `b'\xE0\xEE'`)
+- Individual offset fields required manual tracking (`picc_data_offset`, `mac_offset`, etc.)
+- Helper function returned dict, forcing `.get(key, 0)` calls everywhere
+- User had to know how to encode `AccessRights` to bytes
+
+### Solution
+**Hide encoding details and use proper abstractions:**
+
+1. **Use dataclasses instead of dicts:**
+```python
+# BAD - dict with manual defaults
+offsets = calculate_sdm_offsets(template)  # Returns dict
+config = SDMConfiguration(
+    mac_offset=offsets.get('mac_offset', 0),
+    picc_data_offset=offsets.get('picc_data_offset', 0),
+    # ... repeat for each field
+)
+
+# GOOD - dataclass with sane defaults
+offsets = calculate_sdm_offsets(template)  # Returns SDMOffsets
+config = SDMConfiguration(
+    offsets=offsets  # Clean, no .get() needed
+)
+```
+
+2. **Encapsulate encoding in the higher-level abstraction:**
+```python
+# BAD - user must know how to encode
+access_rights = AccessRights(...)
+config = SDMConfiguration(
+    access_rights=access_rights.to_bytes()  # User handles encoding
+)
+
+# GOOD - abstraction handles encoding internally
+config = SDMConfiguration(
+    access_rights=access_rights  # Pass object, not bytes
+)
+# Encoding happens in get_access_rights_bytes() - internal concern
+```
+
+### Key Principles
+1. **"Don't expose implementation details"** - User shouldn't care about byte encoding
+2. **"Use sane defaults to reduce complexity"** - Dataclasses > dicts with `.get()`
+3. **"It's Pythonic"** - Let the library handle the tedious stuff
+4. **"Encapsulation"** - Higher-level classes should handle lower-level encoding
+
+### Benefits
+- ✅ Self-documenting code (no magic bytes)
+- ✅ Type safety (dataclasses catch errors)
+- ✅ Less boilerplate (no `.get()` everywhere)
+- ✅ Single responsibility (encoding is SDMConfiguration's job)
+
+### Quote
+> "The pattern of access rights and sdmconfig expose too much. I would think the encoding of access rights is the concern of SDM configuration. Finally the offsets should also be a dataclass to avoid having to do the gets with defaults. It's pythonic to use sane defaults to reduce complexity."
+
+---
+
 ## 2025-11-01 - Session Start
 
 ### Issue: Pytest import errors for modules

@@ -48,6 +48,56 @@ class ApduError(Ntag424Error):
         return self.category == ErrorCategory.NOT_FOUND
 
 
+class AuthenticationRateLimitError(ApduError):
+    """Authentication rate-limited (0x91AD) - wait between attempts."""
+    
+    def __init__(self, command_name: str = "Authentication"):
+        super().__init__(
+            f"{command_name} rate-limited.\n"
+            "  Solution: Wait 5 seconds between authentication attempts",
+            0x91, 0xAD
+        )
+
+
+class CommandLengthError(ApduError):
+    """Command length error (0x917E) - payload format issue."""
+    
+    def __init__(self, command_name: str = "Command"):
+        super().__init__(
+            f"{command_name} length error.\n"
+            "  Known Issue: ChangeFileSettings payload format\n"
+            "  Status: Under investigation",
+            0x91, 0x7E
+        )
+
+
+class CommandNotAllowedError(ApduError):
+    """Command not allowed (0x911C) - precondition not met."""
+    
+    def __init__(self, command_name: str = "Command"):
+        super().__init__(
+            f"{command_name} not allowed.\n"
+            "  Possible causes:\n"
+            "    - File not in correct state\n"
+            "    - Authentication required but not provided",
+            0x91, 0x1C
+        )
+
+
+class SecurityNotSatisfiedError(ApduError):
+    """Security condition not satisfied (0x6985) - authentication issue."""
+    
+    def __init__(self, command_name: str = "Command"):
+        super().__init__(
+            f"{command_name} security not satisfied.\n"
+            "  Possible causes:\n"
+            "    - Authentication required\n"
+            "    - Wrong key used\n"
+            "    - File not selected",
+            0x69, 0x85
+        )
+
+
 class AuthenticationError(Ntag424Error):
     """Authentication failed."""
     pass
@@ -247,6 +297,18 @@ class ApduCommand(ABC):
         if (sw1, sw2) not in success_codes:
             # Use reflection to get command class name
             command_name = self.__class__.__name__
-            raise ApduError(f"{command_name} failed", sw1, sw2)
+            
+            # Raise specific exception based on status word
+            if (sw1, sw2) == (0x91, 0xAD):
+                raise AuthenticationRateLimitError(command_name)
+            elif (sw1, sw2) == (0x91, 0x7E):
+                raise CommandLengthError(command_name)
+            elif (sw1, sw2) == (0x91, 0x1C):
+                raise CommandNotAllowedError(command_name)
+            elif (sw1, sw2) == (0x69, 0x85):
+                raise SecurityNotSatisfiedError(command_name)
+            else:
+                # Generic error
+                raise ApduError(f"{command_name} failed", sw1, sw2)
         
         return list(full_response), sw1, sw2
