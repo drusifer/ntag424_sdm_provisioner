@@ -12,7 +12,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
 from ntag424_sdm_provisioner.hal import CardManager
-from ntag424_sdm_provisioner.commands import SelectPiccApplication, GetChipVersion, GetFileSettings
+from ntag424_sdm_provisioner.commands.sdm_commands import SelectPiccApplication, GetChipVersion, GetFileSettings
 
 
 def get_current_settings():

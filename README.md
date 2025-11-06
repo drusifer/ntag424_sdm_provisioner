@@ -1,27 +1,50 @@
 # **NTAG424 SDM Provisioner**
 
-TLDR; **Architecture Refactored ✅** - Clean command layer with `send_command()`, enum auto-formatting, `AuthenticatedConnection` pattern, proper abstractions. 29/29 tests passing. Verified on real chip. See `LESSONS.md` for complete refactoring details. See `SDM_SUN_IMPLEMENTATION_PLAN.md` for SDM roadmap. Run commands: See `HOW_TO_RUN.md`.
+TLDR; **Architecture & API Refactored ✅** - Clean command layer, enum auto-formatting, `AuthenticatedConnection` pattern, proper abstractions, encapsulated encoding (`SDMOffsets`, `AccessRights` dataclasses). Specific exception classes with descriptive messages. 29/29 tests passing. Verified on real chip. See `LESSONS.md` for complete refactoring details including API design principles. See `SDM_SUN_IMPLEMENTATION_PLAN.md` for SDM roadmap. Run commands: See `HOW_TO_RUN.md`.
 
 This project provides a Python-based toolkit for provisioning NXP NTAG424 DNA NFC tags for Secure Dynamic Messaging (SDM). It offers a modular, command-oriented framework for interacting with the tag at a low level, enabling developers to perform a full provisioning sequence from a factory-default state.
 
-## **Recent Updates (2025-11-01)**
+## **Recent Updates (2025-11-02)**
 
-### Architecture Refactoring Complete ✅
-- **Clean Command Base Layer**: `send_command()` with auto multi-frame handling
-- **Enum Auto-Formatting**: All enums show `NAME (0xVALUE)` - no manual formatting needed
+### Architecture & API Refactoring Complete ✅
+
+**Command Layer:**
+- **Clean Base Layer**: `send_command()` with auto multi-frame handling
+- **Enum Auto-Formatting**: All enums show `NAME (0xVALUE)` - no manual formatting
 - **AuthenticatedConnection Pattern**: Context manager for explicit auth scope
 - **Proper Abstractions**: `settings.get_comm_mode()`, `settings.requires_authentication()`
-- **Type-Safe**: Commands work with both regular and authenticated connections
-- **Test Coverage**: 29/29 tests passing, verified on real Seritag chip
+
+**API Design:**
+- **Dataclass Configs**: `SDMOffsets`, `AccessRights` with sane defaults (no `.get()`)
+- **Encapsulated Encoding**: `SDMConfiguration` handles internal byte encoding
+- **Type-Safe**: Dataclasses catch errors at construction, not runtime
+- **Self-Documenting**: No magic bytes (`b'\xE0\xEE'` → `AccessRights(...)`)
+
+**Exception Handling:**
+- **Specific Exceptions**: `AuthenticationRateLimitError`, `CommandLengthError`, etc.
+- **Messages at Throw Time**: Full context when raised, not when caught
+- **Polymorphic**: Exception type = behavior (no if/else string parsing)
+
+**Test Coverage:** 29/29 tests passing, verified on real Seritag chip
 
 ### Example - Clean API:
 ```python
+# Configure SDM with clean abstractions
+access_rights = AccessRights(
+    read=AccessRight.FREE,
+    write=AccessRight.KEY_0
+)
+
+config = SDMConfiguration(
+    file_no=0x02,
+    access_rights=access_rights,  # Object, not bytes!
+    offsets=offsets  # Dataclass with defaults, not dict!
+)
+
+# Authenticated commands with context manager
 with CardManager() as connection:
-    settings = GetFileSettings(file_no=2).execute(connection)
-    
-    if settings.requires_authentication():
-        with AuthenticateEV2(key).execute(connection) as auth_conn:
-            result = SomeCommand().execute(auth_conn)
+    with AuthenticateEV2(key).execute(connection) as auth_conn:
+        ChangeFileSettings(config).execute(auth_conn)
 ```
 
 ## **Features**
@@ -30,9 +53,11 @@ with CardManager() as connection:
 * **Command Architecture:** Each NTAG424 command as distinct class with automatic error handling and multi-frame support.  
 * **Authenticated Session Management:** Context manager pattern for EV2 authentication with automatic CMAC application.  
 * **Enum Constants:** Self-documenting enums with auto-formatting (e.g., `CommMode.PLAIN (0x00)`).  
-* **Type-Safe API:** Commands work with both `NTag424CardConnection` and `AuthenticatedConnection`.
+* **Type-Safe API:** Dataclass-based configuration, commands work with both regular and authenticated connections.
+* **Encapsulated Encoding:** High-level classes handle byte encoding internally (no manual `.to_bytes()` calls).
+* **Specific Exceptions:** Descriptive exception classes for different error conditions (polymorphic error handling).
 * **SDM Support:** Commands for GetFileCounters, ChangeFileSettings, NDEF building with placeholders.
-* **Examples:** 26+ working examples including authenticated connection pattern and chip diagnostics.
+* **Examples:** 10 working examples including authenticated connection pattern, provisioning workflow, chip diagnostics.
 
 ## **Prerequisites**
 

@@ -1,20 +1,58 @@
-# Current Step: Command Architecture Refactoring - COMPLETE ✅
+# Current Step: API Design & Exception Handling Refactoring - COMPLETE ✅
 
-TLDR; Major refactoring complete ✅. Command base layer simplified with `send_command()`, enum constants with auto-formatting, `AuthenticatedConnection` pattern implemented, all 29 tests passing. Verified with real chip. Next: Resume SDM configuration debugging (ChangeFileSettings 0x917E error).
+TLDR; **CSV Key Manager Complete** ✅ (51 tests). Discovered CMAC truncation bug (even-numbered bytes per AN12196). ChangeKey format correct but CMAC still fails (0x911E). Need to debug counter/IV sequencing or find working reference implementation.
 
 ---
 
-## Step Goal
+## Current Status
 
-**COMPLETED:** Refactor command architecture for better maintainability and cleaner API.
+**COMPLETED Today:**
+1. ✅ CSV Key Manager with two-phase commit (22 tests)
+2. ✅ Example 22 updated to proper provisioning sequence
+3. ✅ Discovered CMAC truncation bug (even-numbered bytes per AN12196/NXP spec)
+4. ✅ Fixed ChangeKey format (32 bytes, CRC32, padding, encryption, IV)
+5. ✅ Applied global CMAC fix to apply_cmac()
+
+**BLOCKED:**
+- ChangeKey: 0x911E INTEGRITY_ERROR (16+ attempts)
+- ChangeFileSettings: 0x911E INTEGRITY_ERROR  
+- Both use authenticated CommMode.FULL
+
+## Current Step Goal
+
+**Debug ChangeKey and ChangeFileSettings CMAC** (both failing with 0x911E)
+
+## Investigation Needed
+
+**Verified Correct (per AN12196):**
+- Format: 32 bytes with 0x80 padding
+- CRC32: Inverted for non-zero keys
+- IV: E(KSesAuthENC, zero_iv, A5 5A || TI || CmdCtr || zeros)
+- CMAC input: Cmd || CmdCtr || TI || CmdHeader || EncryptedData
+- CMAC truncation: Even-numbered bytes [1,3,5,7,9,11,13,15]
+- Counter: 0 after auth, increment after command
+
+**Still Failing:**
+- ChangeKey: 0x911E after 16+ attempts
+- ChangeFileSettings: 0x911E 
+
+**Next Steps:**
+1. Find working Python NTAG424 implementation for comparison
+2. Capture wire data from Arduino to compare bytes
+3. Verify session keys are derived correctly
+4. Check if reader (ACR122U) requires different format than spec
+5. Post to NXP community with our AN12196 comparison
 
 **ACHIEVED:**
 1. ✅ Simplified command base layer with `send_command()`
 2. ✅ Enum constants with consistent `__str__()` formatting  
 3. ✅ AuthenticatedConnection context manager pattern
-4. ✅ Clean abstractions (no bitwise math in application code)
-5. ✅ All 29 tests passing
-6. ✅ Verified with real chip
+4. ✅ Clean abstractions (no bitwise math, no manual encoding)
+5. ✅ Specific exception classes with descriptive messages
+6. ✅ Dataclass-based configuration (no dicts with `.get()`)
+7. ✅ Encapsulated encoding (`SDMConfiguration` handles `AccessRights` encoding)
+8. ✅ All 29 tests passing
+9. ✅ Verified with real chip
 
 **NEXT:** Resume SDM configuration debugging (ChangeFileSettings 0x917E error)
 
@@ -45,6 +83,19 @@ TLDR; Major refactoring complete ✅. Command base layer simplified with `send_c
 - **`FileSettingsResponse.requires_authentication()`**: Clean boolean
 - **`CommMode.from_file_option()`**: Enum extraction
 - **`CommMode.requires_auth()`**: Instance method
+
+### 5. Exception Handling Architecture
+- **Specific exception classes**: `AuthenticationRateLimitError`, `CommandLengthError`, etc.
+- **Messages at throw time**: Exceptions contain full context when raised
+- **Polymorphic handling**: Exception type determines behavior (no if/else)
+- **Single catch point**: `except ApduError` catches all APDU-related errors
+
+### 6. API Design - Encapsulation & Pythonic Defaults
+- **`SDMOffsets` dataclass**: Replaces dict with sane defaults (no `.get()`)
+- **`AccessRights` in `SDMConfiguration`**: Pass object, not bytes
+- **Encapsulated encoding**: `get_access_rights_bytes()` is internal
+- **Type safety**: Dataclasses catch errors at construction time
+- **Self-documenting**: No magic bytes (`b'\xE0\xEE'` → `AccessRights(...)`)
 
 ---
 

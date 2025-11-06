@@ -384,9 +384,76 @@
 
 ---
 
-**Last Updated**: Current session - After comprehensive key testing  
-**Status**: Ready for next phase - Wrong RndB' investigation  
-**Key Focus**: RndB rotation/storage internally, Phase 1/Phase 2 key relationship
+**Last Updated**: 2025-11-02 - After ChangeKey/CMAC investigation  
+**Status**: Blocked on ChangeKey 0x911E - CMAC issue despite following spec exactly  
+**Key Focus**: CMAC truncation (even-numbered bytes), CommMode.FULL encryption
+
+---
+
+## AN12343 / AN12196 Key Findings
+
+### CMAC Truncation (CRITICAL!)
+
+**Source:** AN12343 line 976, AN12196 Table 26  
+**Rule:** "The 16 byte MAC is truncated to an 8 byte MAC, using only the **even bytes** in most significant order"
+
+**Implementation:**
+```python
+mac_full = cmac.digest()  # 16 bytes
+mac_truncated = bytes([mac_full[i] for i in range(1, 16, 2)])  # Indices [1,3,5,7,9,11,13,15]
+```
+
+**Example from AN12196:**
+```
+CMAC  = B7A60161F202EC3489BD4BEDEF64BB32
+CMACt = A6610234BDED6432
+Extraction: [A6][61][02][34][BD][ED][64][32] ✓
+```
+
+### ChangeKey Format (CommMode.FULL)
+
+**For Key 0:**
+```
+Data = NewKey(16) || KeyVer(1) || 0x80 || zeros(14) = 32 bytes
+Encrypt with IV = E(KSesAuthENC, zero_iv, A5 5A || TI || CmdCtr || zeros)
+MAC_Input = Ins || CmdCtr || TI || KeyNo || EncryptedData
+```
+
+**For Keys 1-4:**
+```
+Data = (NewKey XOR OldKey)(16) || KeyVer(1) || CRC32(4) || 0x80 || zeros(10) = 32 bytes
+CRC32 = Inverted per Arduino (zlib.crc32() XOR 0xFFFFFFFF)
+Same encryption and CMAC as Key 0
+```
+
+### Padding Rules (AN12343 line 987)
+
+> "Padding Method 2: 0x80 followed by zero bytes (ISO/IEC 9797-1)"
+> "If original data is already multiple of 16, add another 16-byte block"
+> "Exception: No padding during authentication"
+
+### Counter Management
+
+- **Starts at:** 0000 after successful AuthenticateEV2First
+- **Used in IV:** Current value (before increment)
+- **Used in CMAC:** Current value (before increment)
+- **Incremented:** After sending command, before response
+
+---
+
+## ChangeKey / ChangeFileSettings - BLOCKED
+
+**Status:** 0x911E INTEGRITY_ERROR after 16+ attempts  
+**Verified Correct:** Format, padding, CRC32, IV, CMAC structure, truncation  
+**Still Wrong:** CMAC validation fails on real hardware
+
+**Investigation Needed:**
+1. Verify session key derivation with test vectors
+2. Compare exact wire data with Arduino
+3. Check reader-specific requirements
+4. Find working Python implementation for comparison
+
+---
 
 ---
 

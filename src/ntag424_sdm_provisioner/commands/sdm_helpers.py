@@ -105,15 +105,15 @@ def build_sdm_settings_payload(config: SDMConfiguration) -> bytes:
     data.append(sdm_opts)
     
     # SDMAccessRights (2 bytes) - REQUIRED when SDM enabled!
-    # Per NXP spec: 16-bit value
-    # Bits 15-12 (high byte 7-4): SDMMetaRead
-    # Bits 11-8  (high byte 3-0): SDMFileRead
-    # Bits 7-4   (low byte 7-4): RFU (must be F)
-    # Bits 3-0   (low byte 3-0): SDMCtrRet
-    # For plain UID: SDMMetaRead=E, SDMFileRead=F, SDMCtrRet=E
-    # High byte = (E << 4) | F = 0xEF
-    # Low byte = (F << 4) | E = 0xFE (not 0x0E!)
-    data.extend([0xEF, 0xFE])  # SDMAccessRights (FIXED byte order!)
+    # Per Arduino MFRC522 analysis:
+    # Byte 1[7:4] = SDMCtrRet (E = free)
+    # Byte 1[3:0] = SDMFileRead (F = disabled, no CMAC)
+    # Byte 2[7:4] = RFU (0 = reserved, must be 0!)
+    # Byte 2[3:0] = SDMMetaRead (E = plain UID)
+    # For plain UID: SDMCtrRet=E, SDMFileRead=F, RFU=0, SDMMetaRead=E
+    # Byte 1 = (E << 4) | F = 0xEF
+    # Byte 2 = (0 << 4) | E = 0x0E (RFU bits must be 0!)
+    data.extend([0xEF, 0x0E])  # SDMAccessRights (per Arduino analysis!)
     
     # Helper to add 3-byte little-endian offset
     def add_offset(value: int):
@@ -141,7 +141,7 @@ def build_sdm_settings_payload(config: SDMConfiguration) -> bytes:
     # 1. UIDOffset - if UID_MIRROR and SDMMetaRead != F
     # We have SDMMetaRead=E, so this should be present
     if sdm_opts & 0x80:  # UID_MIRROR (bit 7)
-        add_offset(config.offsets.picc_data_offset)  # UID offset
+        add_offset(config.offsets.uid_offset)  # UID offset (FIXED!)
     
     # 2. SDMReadCtrOffset - if READ_COUNTER and SDMMetaRead != F
     # SDMOptions bit 6 = READ_COUNTER (0x40)

@@ -220,20 +220,87 @@ class AuthenticateEV2Second(ApduCommand):
         return bytes(full_response)  # Return the card's encrypted response data
 
 class ChangeKey(ApduCommand):
-    """Changes a key on the card. Must be in an authenticated state."""
-    def __init__(self, key_no_to_change: int, new_key: bytes, old_key: bytes):
-        super().__init__(use_escape=True)
-        # ... (constructor logic)
+    """
+    Changes a key on the card. Must be in an authenticated state.
+    
+    Per NXP spec: CommMode.Full is required (encryption + CMAC).
+    
+    Key format differs for Key 0 vs other keys:
+    - Key 0: newKey + version + padding
+    - Others: (newKey XOR oldKey) + version + CRC32 + padding
+    """
+    def __init__(self, key_no_to_change: int, new_key: bytes, old_key: bytes, key_version: int = 0x00):
+        super().__init__(use_escape=False)  # Use transmit for authenticated commands
         self.key_no = key_no_to_change
-        xored_key_data = bytes(a ^ b for a, b in zip(new_key, old_key))
-        self.data_to_card = [key_no_to_change] + list(xored_key_data)
+        self.new_key = new_key
+        self.old_key = old_key
+        self.key_version = key_version
         
     def __str__(self) -> str:
         return f"ChangeKey(key_no=0x{self.key_no:02X})"
 
-    def execute(self, connection: 'NTag424CardConnection') -> SuccessResponse:
-        apdu = [0x90, 0xC4, 0x00, 0x00, len(self.data_to_card), *self.data_to_card]
-        _, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
+
+    
+    def _build_key_data(self) -> bytes:
+        """
+        Build 32-byte key data for encryption.
+        
+        Format per Arduino MFRC522 library and NXP spec:
+        - Key 0: newKey(16) + version(1) + 0x80 + padding(14) = 32 bytes
+        - Others: XOR(16) + version(1) + CRC32(4) + 0x80 + padding(10) = 32 bytes
+        """
+        import zlib
+        
+        key_data = bytearray(32)
+        
+        if self.key_no == 0:
+            # Key 0 format: NewKey(16) + KeyVer(1) = 17 bytes
+            # Need to pad to 32 bytes for AES encryption
+            unpadded = self.new_key + bytes([self.key_version])
+            # CMAC padding per NIST SP 800-38B: append 0x80, then zeros
+            key_data[0:17] = unpadded
+            key_data[17] = 0x80  # Padding start
+            # Rest is already zeros (14 bytes of zeros)
+        else:
+            # Other keys format: XOR(16) + KeyVer(1) + CRC32(4) = 21 bytes
+            # Need to pad to 32 bytes for AES encryption
+            xored = bytes(a ^ b for a, b in zip(self.new_key, self.old_key))
+            
+            # CRC32 of new key, inverted per Arduino line 2148
+            # crc = CRC32::calculate(...) & 0xFFFFFFFF ^ 0xFFFFFFFF
+            crc = zlib.crc32(self.new_key) & 0xFFFFFFFF
+            crc_inverted = crc ^ 0xFFFFFFFF  # Invert all bits
+            
+            unpadded = xored + bytes([self.key_version]) + crc_inverted.to_bytes(4, byteorder='little')
+            # CMAC padding: append 0x80, then zeros
+            key_data[0:21] = unpadded
+            key_data[21] = 0x80  # Padding start
+            # Rest is already zeros (10 bytes of zeros)
+        
+        return bytes(key_data)
+
+    def execute(
+        self, 
+        connection: 'NTag424CardConnection',
+        session: Optional['Ntag424AuthSession'] = None
+    ) -> SuccessResponse:
+        """
+        Execute ChangeKey command with encryption and CMAC protection.
+        
+        Per Arduino DNA_CalculateDataEncAndCMACt (lines 2153-2181):
+        1. Build 32-byte key data (already padded)
+        2. Encrypt with session enc key
+        3. Calculate CMAC over: Cmd || CmdCtr || TI || KeyNo || EncryptedData
+        
+        Args:
+            connection: Card connection
+            session: Authenticated session (required per spec - CommMode.Full)
+        """
+        from ntag424_sdm_provisioner.commands.change_key import DNA_Calc
+        dna_calc = DNA_Calc(session.session_keys.enc_key, session.session_keys.mac_key, ti=session.session_keys.ti)
+        apdu_bytes = dna_calc.full_change_key(self.key_no, self.new_key, 
+                old_key=self.old_key, new_key_version=self.key_version)
+        _, sw1, sw2 = self.send_command(connection, apdu_bytes, allow_alternative_ok=False)
         return SuccessResponse(f"Key 0x{self.key_no:02X} changed successfully.")
 
 class GetFileIds(ApduCommand):

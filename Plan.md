@@ -1,6 +1,6 @@
 # NTAG424 SDM Provisioner - Implementation Plan
 
-TLDR; Architecture refactored ✅: Clean command base layer, enum auto-formatting, AuthenticatedConnection pattern, proper abstractions. 29/29 tests passing. Real chip verified. See `SDM_SUN_IMPLEMENTATION_PLAN.md` for SDM roadmap. See `LESSONS.md` for refactoring details.
+TLDR; **Architecture & API refactored** ✅: Clean command layer, enum auto-formatting, `AuthenticatedConnection` pattern, proper abstractions, encapsulated encoding, dataclass configs. 29/29 tests passing. Real chip verified. See `SDM_SUN_IMPLEMENTATION_PLAN.md` for SDM roadmap. See `LESSONS.md` for complete refactoring details including API design principles.
 
 ---
 

@@ -279,11 +279,12 @@ class Ntag424AuthSession:
         """
         Apply CMAC to command data for authenticated commands.
         
-        CMAC is calculated over: CmdCounter || CmdHeader || CmdData
-        and appended as 8 bytes to the command data.
+        Per AN12196 and NXP datasheet:
+        CMAC is calculated over: Cmd || CmdCounter || TI || CmdHeader || CmdData
         
         Args:
-            cmd_header: 4-byte command header [CLA INS P1 P2]
+            cmd_header: 4-byte APDU command header [CLA INS P1 P2]
+                       (INS byte will be extracted as native Cmd)
             cmd_data: Command data payload (without CMAC)
         
         Returns:
@@ -298,9 +299,15 @@ class Ntag424AuthSession:
         # Increment command counter
         self.session_keys.cmd_counter += 1
         
-        # Build data to MAC: CmdCounter || CmdHeader || CmdData
+        # Build data to MAC: Cmd || CmdCtr || TI || CmdHeader || CmdData
+        # Per AN12196: "Cmd" is the native command byte (INS), not full APDU header!
+        native_cmd = cmd_header[1]  # Extract INS byte from [CLA, INS, P1, P2]
         cmd_ctr_bytes = self.session_keys.cmd_counter.to_bytes(2, 'little')
-        data_to_mac = cmd_ctr_bytes + cmd_header + cmd_data
+        ti = self.session_keys.ti
+        
+        # CmdHeader in CMAC is the command-specific header (e.g., FileNo, KeyNo)
+        # which is already in cmd_data, so we don't include full APDU header
+        data_to_mac = bytes([native_cmd]) + cmd_ctr_bytes + ti + cmd_data
         
         log.debug(f"CMAC input (counter={self.session_keys.cmd_counter}): {data_to_mac.hex()}")
         
@@ -309,8 +316,11 @@ class Ntag424AuthSession:
         cmac.update(data_to_mac)
         mac_full = cmac.digest()  # 16 bytes
         
-        # Truncate to 8 bytes (EV2 specification)
-        mac_truncated = mac_full[:8]
+        # Truncate to 8 bytes using EVEN-NUMBERED bytes (indices 1,3,5,7,9,11,13,15)
+        # Per NXP NT4H2421Gx datasheet line 852:
+        # "The MAC used in NT4H2421Gx is truncated by using only the 8 even-numbered bytes"
+        # This applies to ALL CMAC calculations in NTAG424 DNA
+        mac_truncated = bytes([mac_full[i] for i in range(1, 16, 2)])
         
         log.debug(f"CMAC (truncated): {mac_truncated.hex()}")
         

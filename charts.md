@@ -15,6 +15,7 @@ This diagram shows the complete workflow for provisioning an NTAG424 DNA tag for
 
 ```mermaid
 sequenceDiagram
+
     participant Host as Provisioning Host
     participant Reader as NFC Reader
     participant Tag as NTAG424 Tag

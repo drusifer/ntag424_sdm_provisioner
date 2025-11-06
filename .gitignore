@@ -66,3 +66,7 @@ Thumbs.db
 # Project-specific
 src/ntag424_sdm_provisioner.egg-info/
 
+# Tag key databases (NEVER commit these!)
+tag_keys.csv
+tag_keys_backup.csv
+
