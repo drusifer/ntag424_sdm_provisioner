@@ -64,7 +64,7 @@ def reset_to_factory():
                 print(f"[INFO] Attempting auth with saved key: {saved_key.hex()[:16]}...")
                 
                 try:
-                    with AuthenticateEV2(saved_key, 0).execute(card) as auth_conn:
+                    with AuthenticateEV2(saved_key, 0)(card) as auth_conn:
                         print("[OK] Authenticated with saved key!")
                         print()
                         print("Resetting keys to factory defaults...")
@@ -72,7 +72,7 @@ def reset_to_factory():
                         # Reset each key back to 0x00
                         for key_no in [0, 1, 3]:
                             print(f"  Resetting Key {key_no}...", end=" ")
-                            ChangeKey(key_no, factory_key, saved_key, 0x00).execute(auth_conn)
+                            auth_conn.send(ChangeKey(key_no, factory_key, saved_key, 0x00))
                             print("[OK]")
                         
                         print()
@@ -95,7 +95,7 @@ def reset_to_factory():
             print("[INFO] Attempting auth with factory key (0x00*16)...")
             
             try:
-                with AuthenticateEV2(factory_key, 0).execute(card) as auth_conn:
+                with AuthenticateEV2(factory_key, 0)(card) as auth_conn:
                     print("[OK] Tag already has factory key!")
                     print()
                     

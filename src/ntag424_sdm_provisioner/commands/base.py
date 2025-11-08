@@ -126,9 +126,9 @@ class AuthenticatedConnection:
     application for all authenticated commands.
     
     Usage:
-        with AuthenticateEV2(key).execute(connection) as auth_conn:
-            settings = GetFileSettings(file_no=2).execute(auth_conn)
-            key_ver = GetKeyVersion(key_no=0).execute(auth_conn)
+        with AuthenticateEV2(key, key_no=0)(connection) as auth_conn:
+            # Use auth_conn.send() for authenticated commands
+            auth_conn.send(ChangeKey(0, new_key, old_key))
     """
     
     def __init__(self, connection: NTag424CardConnection, session: Ntag424AuthSession):
@@ -580,15 +580,8 @@ class ApduCommand(ABC):
         """
         self.use_escape = use_escape
 
-    @abstractmethod
-    def execute(self, connection: NTag424CardConnection) -> Any: 
-        """
-        Executes the command against a card connection. This method must be
-        implemented by all subclasses.
-        
-        NOTE: This method is being deprecated in favor of connection.send(command).
-        """
-        raise NotImplementedError
+    # execute() method removed - use connection.send(command) pattern instead
+    # Special commands (like AuthenticateEV2) can still define execute() for custom behavior
     
     def build_apdu(self) -> List[int]:
         """
@@ -779,19 +772,5 @@ class AuthApduCommand(ABC):
             "Use command.execute(auth_conn) instead."
         )
 
-    @abstractmethod
-    def execute(self, auth_conn: AuthenticatedConnection) -> Any:
-        """
-        Execute authenticated command.
-        
-        Args:
-            auth_conn: Authenticated connection with crypto methods
-            
-        Returns:
-            Command-specific response
-            
-        Note:
-            Type checkers enforce that auth_conn is AuthenticatedConnection.
-            This provides compile-time safety for authenticated commands.
-        """
-        raise NotImplementedError
+    # execute() method removed - use auth_conn.send(command) pattern instead
+    # Commands define build_command_data() and parse_response() only

@@ -7,13 +7,10 @@ from Crypto.Random import get_random_bytes
 from typing import Tuple
 
 from ntag424_sdm_provisioner.constants import AuthSessionKeys, AuthenticationResponse
-
-from ntag424_sdm_provisioner.commands.sdm_commands import (
-    AuthenticateEV2First,
-    AuthenticateEV2Second
-)
 from ntag424_sdm_provisioner.commands.base import AuthenticationError
 from ntag424_sdm_provisioner.hal import NTag424CardConnection
+
+# Note: AuthenticateEV2First/Second imported locally in methods to avoid circular dependency
 
 # Import verified crypto primitives - ALL auth crypto now uses these verified functions
 from ntag424_sdm_provisioner.crypto.crypto_primitives import (
@@ -107,6 +104,9 @@ class Ntag424AuthSession:
         Returns:
             Encrypted RndB (16 bytes)
         """
+        # Local import to avoid circular dependency
+        from ntag424_sdm_provisioner.commands.authenticate_ev2 import AuthenticateEV2First
+        
         log.debug(f"Phase 1: Requesting challenge for key {key_no:02X}")
         log.debug(f"Using authentication key: {self.key.hex().upper()}")
         
@@ -155,6 +155,9 @@ class Ntag424AuthSession:
         
         # 4. Encrypt RndA + RndB_rotated and send to card
         response_data = self._encrypt_response(rnda, rndb_rotated)
+        
+        # Local import to avoid circular dependency
+        from ntag424_sdm_provisioner.commands.authenticate_ev2 import AuthenticateEV2Second
         
         cmd = AuthenticateEV2Second(data_to_card=response_data)
         encrypted_response = cmd.execute(connection)

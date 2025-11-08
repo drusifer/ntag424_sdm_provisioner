@@ -175,7 +175,7 @@ def build_ndef_uri_record(url: str) -> bytes:
         url: Complete URL (with or without placeholders)
     
     Returns:
-        NDEF message bytes ready to write to file
+        NDEF message bytes ready to write to file (includes length field for Type 4 tags)
     """
     # URI identifier codes (0x04 = "https://")
     uri_prefix = 0x04
@@ -202,12 +202,20 @@ def build_ndef_uri_record(url: str) -> bytes:
     ]) + url_bytes
     
     # Wrap in TLV: [T=03][L][NDEF Record][T=FE]
-    ndef_message = bytes([
+    ndef_tlv = bytes([
         0x03,  # NDEF Message TLV
         len(ndef_record)
     ]) + ndef_record + bytes([0xFE])  # Terminator TLV
     
-    return ndef_message
+    # Type 4 Tags require 2-byte length field at start for phone compatibility
+    ndef_length = len(ndef_tlv)
+    length_field = bytes([
+        (ndef_length >> 8) & 0xFF,  # Length high byte
+        ndef_length & 0xFF           # Length low byte
+    ])
+    
+    # Final format: [Length (2 bytes)][NDEF Message]
+    return length_field + ndef_tlv
 
 
 def parse_file_settings(file_no: int, data: bytes) -> FileSettingsResponse:

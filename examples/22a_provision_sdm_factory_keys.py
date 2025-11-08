@@ -116,7 +116,7 @@ def provision_sdm_factory_keys():
             print("-" * 70)
             print("  Authenticating with factory key...")
             
-            with AuthenticateEV2(KEY_DEFAULT_FACTORY, key_no=0).execute(card) as auth_conn:
+            with AuthenticateEV2(KEY_DEFAULT_FACTORY, key_no=0)(card) as auth_conn:
                 print("  [OK] Authenticated")
                 print()
                 

@@ -53,27 +53,13 @@ class ISOSelectFile(ApduCommand):
         except ValueError:
             return f"ISOSelectFile(0x{self.file_id:04X})"
     
-    def execute(self, connection: NTag424CardConnection) -> SuccessResponse:
-        """
-        Execute ISO SELECT FILE command.
-        
-        Args:
-            connection: Card connection
-        
-        Returns:
-            SuccessResponse on success
-        
-        Raises:
-            ApduError: If selection fails
-        """
-        # Build APDU: CLA INS P1 P2 Lc Data Le
-        # CLA=0x00 (ISO7816), INS=0xA4 (SELECT_FILE), P1=0x02 (select EF), P2=0x00
+    def build_apdu(self) -> list:
+        """Build APDU for new connection.send(command) pattern."""
         file_id_bytes = [
             (self.file_id >> 8) & 0xFF,  # High byte
             self.file_id & 0xFF           # Low byte
         ]
-        
-        apdu = [
+        return [
             0x00,  # CLA: ISO7816
             APDUInstruction.SELECT_FILE.value,  # INS: 0xA4
             self.P1_SELECT_EF,  # P1: Select EF
@@ -82,10 +68,9 @@ class ISOSelectFile(ApduCommand):
             *file_id_bytes,  # File ID (2 bytes)
             0x00   # Le
         ]
-        
-        _, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
-        
-        # Use enum's __str__() for formatting
+    
+    def parse_response(self, data: bytes, sw1: int, sw2: int) -> SuccessResponse:
+        """Parse response for new connection.send(command) pattern."""
         try:
             file_id_enum = ISOFileID(self.file_id)
             return SuccessResponse(f"{file_id_enum} selected")
@@ -115,33 +100,16 @@ class ISOReadBinary(ApduCommand):
     def __str__(self) -> str:
         return f"ISOReadBinary(offset={self.offset}, length={self.length})"
     
-    def execute(self, connection: NTag424CardConnection) -> bytes:
-        """
-        Execute ISO READ BINARY command.
-        
-        Args:
-            connection: Card connection
-        
-        Returns:
-            bytes: Data read from file
-        
-        Raises:
-            ApduError: If read fails
-        """
-        # Build APDU: CLA INS P1 P2 Le
-        # CLA=0x00 (ISO7816), INS=0xB0 (READ_BINARY)
-        # P1=offset_high (0x00 for offsets < 32768)
-        # P2=offset_low
-        # Le=expected length (0x00 means 256 bytes)
-        
-        apdu = [
+    def build_apdu(self) -> list:
+        """Build APDU for new connection.send(command) pattern."""
+        return [
             0x00,  # CLA: ISO7816
             0xB0,  # INS: READ_BINARY
             (self.offset >> 8) & 0xFF,  # P1: Offset high byte
             self.offset & 0xFF,          # P2: Offset low byte
             self.length if self.length <= 255 else 0  # Le: Expected length (0=256)
         ]
-        
-        data, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
-        
-        return bytes(data)
+    
+    def parse_response(self, data: bytes, sw1: int, sw2: int) -> bytes:
+        """Parse response for new connection.send(command) pattern."""
+        return data

@@ -8,7 +8,6 @@ from smartcard.scard import (SCARD_SCOPE_USER, SCARD_STATE_PRESENT,
                              SCARD_STATE_UNAWARE, SCardEstablishContext,
                              SCardGetStatusChange, SCardReleaseContext)
 from smartcard.System import readers
-from smartcard.util import toHexString
 from ntag424_sdm_provisioner.constants import StatusWord
 
 # --- PC/SC Constants (Corrected Cross-Platform Import) ---
@@ -21,7 +20,13 @@ except ImportError:
     IOCTL_CCID_ESCAPE = 3500
 
 def hexb(data: Union[bytes, List[int]]) -> str:
-    return toHexString(data)
+    """Format bytes or list of ints as hex string (no smartcard dependency)."""
+    if isinstance(data, bytes):
+        return ' '.join(f'{b:02X}' for b in data)
+    elif isinstance(data, (list, tuple)):
+        return ' '.join(f'{b:02X}' for b in data)
+    else:
+        return str(data)
 
 def format_status_word(sw1: int, sw2: int) -> str:
     """Format status word with enum name for readability."""
@@ -54,7 +59,7 @@ class CardManager:
         self.connection: Optional[CardConnection] = None
         self.context = None
 
-    def __enter__(self) -> 'NTag424CardConnection':
+    def __enter__(self) -> NTag424CardConnection:
         try:
             # 1. Establish a PC/SC context. This is the handle to the resource manager.
             hresult, self.context = SCardEstablishContext(SCARD_SCOPE_USER)
@@ -240,7 +245,7 @@ class NTag424CardConnection:
         This method contains the pyscard-specific logic, abstracting it away
         from the command classes.
         """
-        log.debug(f"  >> C-APDU: {toHexString(apdu)}")
+        log.debug(f"  >> C-APDU: {hexb(apdu)}")
 
         # Environment overrides for escape mode behavior
         try:
@@ -264,7 +269,7 @@ class NTag424CardConnection:
                 
                 # Manually parse the raw response
                 data, sw1, sw2 = resp[:-2], resp[-2], resp[-1]
-                log.debug(f"  << R-APDU (Control): {toHexString(data)} [{format_status_word(sw1, sw2)}]")
+                log.debug(f"  << R-APDU (Control): {hexb(data)} [{format_status_word(sw1, sw2)}]")
                 return list(data), sw1, sw2
             except Exception as e:
                 log.error(f"Error during control() command: {e}")

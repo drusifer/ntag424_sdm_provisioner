@@ -64,7 +64,7 @@ def main():
         if needs_auth:
             print("    File REQUIRES authentication - using AuthenticateEV2...")
             try:
-                with AuthenticateEV2(FACTORY_KEY, key_no=0).execute(connection) as auth_conn:
+                with AuthenticateEV2(FACTORY_KEY, key_no=0)(connection) as auth_conn:
                     print(f"    Authenticated: {auth_conn}")
                     
                     # Commands that require CMAC would work here

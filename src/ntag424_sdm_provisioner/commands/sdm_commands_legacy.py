@@ -1,16 +1,16 @@
 """
-DEPRECATED: This module has been refactored into individual command files.
+DEPRECATED: Legacy imports for backwards compatibility.
 
-For new code, import directly from command modules:
+This module re-exports commands from their new individual files.
+New code should import directly from command modules:
   - from ntag424_sdm_provisioner.commands.select_picc_application import SelectPiccApplication
   - from ntag424_sdm_provisioner.commands.get_chip_version import GetChipVersion
-  - from ntag424_sdm_provisioner.commands.authenticate_ev2 import AuthenticateEV2
   - etc.
 
-This file provides backwards-compatible re-exports for existing code.
+This file exists only for backwards compatibility with existing examples.
 """
 
-# Re-export all commands from their new individual files
+# Re-export all commands from their new locations
 from ntag424_sdm_provisioner.commands.select_picc_application import SelectPiccApplication
 from ntag424_sdm_provisioner.commands.get_chip_version import GetChipVersion
 from ntag424_sdm_provisioner.commands.authenticate_ev2 import (
@@ -34,3 +34,4 @@ __all__ = [
     'GetKeyVersion',
     'GetFileCounters',
 ]
+

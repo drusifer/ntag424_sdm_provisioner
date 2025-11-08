@@ -83,7 +83,7 @@ def authenticate_example():
             print(f"\n🔑 Trying {description} for key {key_no}...")
             try:
                 from ntag424_sdm_provisioner.commands.sdm_commands import AuthenticateEV2
-                auth_conn = AuthenticateEV2(key, key_no).execute(card)
+                auth_conn = AuthenticateEV2(key, key_no)(card)
                 print(f"✅ Authentication successful with {description}!")
                 break
             except Exception as e:

@@ -27,13 +27,11 @@ sys.path.insert(0, os.path.join(project_root, 'src'))
 
 from ntag424_sdm_provisioner.hal import CardManager
 from ntag424_sdm_provisioner.csv_key_manager import CsvKeyManager, TagKeys
-from ntag424_sdm_provisioner.constants import GAME_COIN_BASE_URL
+from ntag424_sdm_provisioner.constants import GAME_COIN_BASE_URL, NdefUriPrefix
 from ntag424_sdm_provisioner.uid_utils import format_uid_with_asset_tag, uid_to_asset_tag
-from ntag424_sdm_provisioner.commands.sdm_commands import (
-    SelectPiccApplication,
-    GetChipVersion,
-    AuthenticateEV2,
-)
+from ntag424_sdm_provisioner.commands.select_picc_application import SelectPiccApplication
+from ntag424_sdm_provisioner.commands.get_chip_version import GetChipVersion
+from ntag424_sdm_provisioner.commands.authenticate_ev2 import AuthenticateEV2
 from ntag424_sdm_provisioner.commands.change_key import ChangeKey
 from ntag424_sdm_provisioner.commands.get_file_counters import GetFileCounters
 from ntag424_sdm_provisioner.commands.change_file_settings import ChangeFileSettings
@@ -85,25 +83,36 @@ def check_tag_state_and_prepare(card, uid: bytes, key_mgr: CsvKeyManager, new_ur
                     from ntag424_sdm_provisioner.commands.iso_commands import ISOReadBinary
                     
                     # Select NDEF file
-                    ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
+                    card.send(ISOSelectFile(ISOFileID.NDEF_FILE))
                     
                     # Read NDEF using ISO command (matching how we write)
-                    ndef_data = ISOReadBinary(offset=0, length=200).execute(card)
+                    ndef_data = card.send(ISOReadBinary(offset=0, length=200))
                     
                     # Extract URL from NDEF (skip TLV header, find URL)
                     # NDEF format: 0x03 <len> 0xD1 0x01 <len> 0x55 <url_code> <url_bytes> 0xFE
                     url_bytes = bytes(ndef_data)
                     # Find 0x55 (URL record type)
                     if 0x55 in url_bytes:
-                        url_start = url_bytes.index(0x55) + 2  # Skip 0x55 and URL prefix code
+                        uri_type_pos = url_bytes.index(0x55)
+                        prefix_code = url_bytes[uri_type_pos + 1]
+                        url_start = uri_type_pos + 2  # Skip 0x55 and prefix code
                         url_end = url_bytes.index(0xFE) if 0xFE in url_bytes else len(url_bytes)
-                        tap_url = url_bytes[url_start:url_end].decode('utf-8')
+                        
+                        # Decode prefix using enum
+                        try:
+                            prefix_enum = NdefUriPrefix(prefix_code)
+                            prefix = prefix_enum.to_prefix_string()
+                        except ValueError:
+                            prefix = ""
+                        
+                        url_suffix = url_bytes[url_start:url_end].decode('utf-8')
+                        tap_url = prefix + url_suffix
                         log.info(f"  Tap URL: {tap_url}")
                     else:
                         log.warning("  Could not parse URL from NDEF")
                     
                     # Re-select PICC for next operations
-                    SelectPiccApplication().execute(card)
+                    card.send(SelectPiccApplication())
                 except Exception as e:
                     log.warning(f"  Could not read: {e}")
                 
@@ -141,7 +150,7 @@ def check_tag_state_and_prepare(card, uid: bytes, key_mgr: CsvKeyManager, new_ur
                     if response != 'n':
                         factory_key = bytes(16)
                         with trace_block("Factory Reset"):
-                            auth_conn = AuthenticateEV2(key=factory_key, key_no=0).execute(card)
+                            auth_conn = AuthenticateEV2(key=factory_key, key_no=0)(card)
                             auth_conn.send(ChangeKey(0, factory_key, factory_key, 0x00))
                         
                         factory_keys = TagKeys.from_factory_keys(uid.hex().upper())
@@ -193,10 +202,10 @@ def provision_game_coin():
             log.info("Step 1: Get Chip Information")
             log.info("-" * 70)
             
-            SelectPiccApplication().execute(card)
+            card.send(SelectPiccApplication())
             log.info("  Application selected")
             
-            version_info = GetChipVersion().execute(card)
+            version_info = card.send(GetChipVersion())
             uid = version_info.uid
             asset_tag = uid_to_asset_tag(uid)
             log.info(f"  Chip UID: {format_uid_with_asset_tag(uid)}")
@@ -281,15 +290,15 @@ def provision_game_coin():
                 # SESSION 1: Change Key 0 only
                 log.info("  [Session 1] Changing Key 0...")
                 with trace_block("Session 1: Change Key 0"):
-                    with AuthenticateEV2(current_picc_key, key_no=0).execute(card) as auth_conn:
+                    with AuthenticateEV2(current_picc_key, key_no=0)(card) as auth_conn:
                         log.info("    Authenticated with old Key 0")
                         
                         with trace_block("ChangeKey 0"):
-                            res = ChangeKey(
+                            res = auth_conn.send(ChangeKey(
                                 key_no_to_change=0,
                                 new_key=new_keys.get_picc_master_key_bytes(),
                                 old_key=None
-                            ).execute(auth_conn)
+                            ))
                             log.info(f"    Key 0 changed - {res}")
                         
                         # Session is now INVALID (Key 0 changed)
@@ -303,25 +312,25 @@ def provision_game_coin():
                 with trace_block("Session 2: Change Keys 1 and 3"):
                     new_picc_key = new_keys.get_picc_master_key_bytes()
                     
-                    with AuthenticateEV2(new_picc_key, key_no=0).execute(card) as auth_conn:
+                    with AuthenticateEV2(new_picc_key, key_no=0)(card) as auth_conn:
                         log.info("    Authenticated with NEW Key 0")
                         
                         # Change Key 1
                         with trace_block("ChangeKey 1"):
-                            res = ChangeKey(
+                            res = auth_conn.send(ChangeKey(
                                 key_no_to_change=1,
                                 new_key=new_keys.get_app_read_key_bytes(),
                                 old_key=None
-                            ).execute(auth_conn)
+                            ))
                             log.info(f"    Key 1 changed - {res}")
                         
                         # Change Key 3
                         with trace_block("ChangeKey 3"):
-                            res = ChangeKey(
+                            res = auth_conn.send(ChangeKey(
                                 key_no_to_change=3,
                                 new_key=new_keys.get_sdm_mac_key_bytes(),
                                 old_key=None
-                            ).execute(auth_conn)
+                            ))
                             log.info(f"    Key 3 changed - {res}")
                         
                         log.info("    All keys changed successfully")
@@ -355,7 +364,7 @@ def provision_game_coin():
                         
                         try:
                             # ChangeFileSettings (PLAIN mode for SDM config)
-                            ChangeFileSettings(sdm_config).execute(card)
+                            card.send(ChangeFileSettings(sdm_config))
                             log.info("    SDM configured successfully!")
                         except ApduError as e:
                             log.warning(f"    SDM configuration failed: {e}")
@@ -365,15 +374,15 @@ def provision_game_coin():
                         # Write NDEF message
                         log.info("    Writing NDEF message...")
                         log.info("    Selecting NDEF file...")
-                        ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
+                        card.send(ISOSelectFile(ISOFileID.NDEF_FILE))
                         log.info("    NDEF file selected")
                         
                         log.info(f"    Writing {len(ndef_message)} bytes (chunked)...")
-                        WriteNdefMessage(ndef_data=ndef_message).execute(card)
+                        card.send(WriteNdefMessage(ndef_data=ndef_message))
                         log.info("    NDEF message written")
                         
                         # Re-select PICC application
-                        SelectPiccApplication().execute(card)
+                        card.send(SelectPiccApplication())
                         log.info("    PICC application re-selected")
                         log.info("")
                 
@@ -390,17 +399,29 @@ def provision_game_coin():
                 from ntag424_sdm_provisioner.commands.iso_commands import ISOReadBinary
                 
                 # Select NDEF file
-                ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
+                card.send(ISOSelectFile(ISOFileID.NDEF_FILE))
                 
                 # Read NDEF using ISO command (matching how we wrote it)
-                ndef_data = ISOReadBinary(offset=0, length=200).execute(card)
+                ndef_data = card.send(ISOReadBinary(offset=0, length=200))
                 
                 # Extract URL
                 url_bytes = bytes(ndef_data)
                 if 0x55 in url_bytes:
-                    url_start = url_bytes.index(0x55) + 2
+                    # NDEF URI format: ... 0x55 <prefix_code> <url_without_prefix> ...
+                    uri_type_pos = url_bytes.index(0x55)
+                    prefix_code = url_bytes[uri_type_pos + 1]
+                    url_start = uri_type_pos + 2  # Skip 0x55 and prefix code
                     url_end = url_bytes.index(0xFE) if 0xFE in url_bytes else len(url_bytes)
-                    tap_url = url_bytes[url_start:url_end].decode('utf-8')
+                    
+                    # Decode prefix using enum
+                    try:
+                        prefix_enum = NdefUriPrefix(prefix_code)
+                        prefix = prefix_enum.to_prefix_string()
+                    except ValueError:
+                        prefix = ""
+                    
+                    url_suffix = url_bytes[url_start:url_end].decode('utf-8')
+                    tap_url = prefix + url_suffix
                     
                     log.info("")
                     log.info(f"  Tap URL: {tap_url}")
@@ -416,7 +437,7 @@ def provision_game_coin():
                     log.warning("  Could not parse URL from NDEF")
                 
                 # Re-select PICC
-                SelectPiccApplication().execute(card)
+                card.send(SelectPiccApplication())
                 
             except Exception as e:
                 log.warning(f"  Could not verify: {e}")

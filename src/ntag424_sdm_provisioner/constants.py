@@ -432,6 +432,23 @@ class NdefUriPrefix(IntEnum):
     
     def __str__(self) -> str:
         return f"{self.name} (0x{self.value:02X})"
+    
+    def to_prefix_string(self) -> str:
+        """Convert prefix code to actual URL prefix string."""
+        prefix_strings = {
+            NdefUriPrefix.NONE: "",
+            NdefUriPrefix.HTTP_WWW: "http://www.",
+            NdefUriPrefix.HTTPS_WWW: "https://www.",
+            NdefUriPrefix.HTTP: "http://",
+            NdefUriPrefix.HTTPS: "https://",
+            NdefUriPrefix.TEL: "tel:",
+            NdefUriPrefix.MAILTO: "mailto:",
+            NdefUriPrefix.FTP_ANON: "ftp://anonymous:anonymous@",
+            NdefUriPrefix.FTP: "ftp://",
+            NdefUriPrefix.FTPS: "ftps://",
+            NdefUriPrefix.SFTP: "sftp://",
+        }
+        return prefix_strings.get(self, "")
 
 
 class NdefRecordType(IntEnum):
@@ -568,6 +585,9 @@ class AuthenticationResponse:
     def __str__(self) -> str:
         return f"AuthenticationResponse(ti={self.ti.hex().upper()}, rnda_rotated={self.rnda_rotated.hex().upper()[:8]}..., pdcap_len={len(self.pdcap)}, pcdcap_len={len(self.pcdcap)})"
 
+
+# NOTE: Ntag424VersionInfo moved to commands/get_chip_version.py
+# Import directly: from ntag424_sdm_provisioner.commands.get_chip_version import Ntag424VersionInfo
 
 @dataclass
 class Ntag424VersionInfo:
@@ -849,3 +869,189 @@ def describe_status_word(sw1: int, sw2: int) -> str:
 
 
 GAME_COIN_BASE_URL = "https://script.google.com/a/macros/gutsteins.com/s/AKfycbz2gCQYl_OjEJB26jiUL8253I0bX4czxykkcmt-MnF41lIyX18SLkRgUcJ_VJRJbiwh/exec"
+
+
+# ============================================================================
+# Capability Container (CC) File
+# ============================================================================
+
+@dataclass
+class CCFileData:
+    """
+    Capability Container file data for NFC Type 4 Tag.
+    
+    The CC file tells phones/readers where to find NDEF data and
+    what access conditions apply.
+    """
+    cc_length: int           # Total CC length in bytes
+    mapping_version: int     # T4T mapping version (0x20 = v2.0)
+    max_read_length: int     # MLe - max bytes in single read
+    max_write_length: int    # MLc - max bytes in single write
+    ndef_file_id: int        # File ID of NDEF file (usually 0xE104)
+    ndef_file_size: int      # Size of NDEF file in bytes
+    ndef_read_access: int    # Read access condition (0x00 = FREE)
+    ndef_write_access: int   # Write access condition (0x00 = FREE)
+    proprietary_file_id: int = 0xE105  # Proprietary file ID
+    proprietary_file_size: int = 128   # Proprietary file size
+    proprietary_read_access: int = 0x82   # Requires Key 2
+    proprietary_write_access: int = 0x83  # Requires Key 3
+    
+    # Constants
+    FACTORY_CC_LENGTH = 0x0017  # 23 bytes
+    T4T_VERSION_2_0 = 0x20
+    DEFAULT_MLE = 0x0100  # 256 bytes
+    DEFAULT_MLC = 0x00FF  # 255 bytes
+    
+    # TLV Tags
+    TLV_NDEF_FILE_CONTROL = 0x04
+    TLV_PROPRIETARY_FILE_CONTROL = 0x05
+    
+    # Access condition codes
+    ACCESS_FREE = 0x00
+    ACCESS_KEY_AUTH = 0x80  # Base code, OR with key number
+    
+    @staticmethod
+    def from_bytes(data: bytes) -> 'CCFileData':
+        """Parse CC file data from raw bytes."""
+        if len(data) < 15:
+            raise ValueError(f"CC file data too short: {len(data)} bytes")
+        
+        cc_length = (data[0] << 8) | data[1]
+        mapping_version = data[2]
+        max_read_length = (data[3] << 8) | data[4]
+        max_write_length = (data[5] << 8) | data[6]
+        
+        # Parse NDEF File Control TLV (starts at byte 7)
+        tlv_tag = data[7]
+        tlv_len = data[8]
+        
+        if tlv_tag != 0x04 or tlv_len != 0x06:
+            raise ValueError(f"Invalid NDEF File Control TLV: T={tlv_tag:02X}, L={tlv_len:02X}")
+        
+        ndef_file_id = (data[9] << 8) | data[10]
+        ndef_file_size = (data[11] << 8) | data[12]
+        ndef_read_access = data[13]
+        ndef_write_access = data[14]
+        
+        # Parse Proprietary File Control TLV (optional, starts at byte 15)
+        prop_fid = 0xE105
+        prop_size = 128
+        prop_read = 0x82
+        prop_write = 0x83
+        
+        if len(data) >= 21:
+            prop_tlv_tag = data[15]
+            prop_tlv_len = data[16]
+            if prop_tlv_tag == 0x05 and prop_tlv_len == 0x06:
+                prop_fid = (data[17] << 8) | data[18]
+                prop_size = (data[19] << 8) | data[20]
+                prop_read = data[21] if len(data) > 21 else 0x82
+                prop_write = data[22] if len(data) > 22 else 0x83
+        
+        return CCFileData(
+            cc_length=cc_length,
+            mapping_version=mapping_version,
+            max_read_length=max_read_length,
+            max_write_length=max_write_length,
+            ndef_file_id=ndef_file_id,
+            ndef_file_size=ndef_file_size,
+            ndef_read_access=ndef_read_access,
+            ndef_write_access=ndef_write_access,
+            proprietary_file_id=prop_fid,
+            proprietary_file_size=prop_size,
+            proprietary_read_access=prop_read,
+            proprietary_write_access=prop_write
+        )
+    
+    def to_bytes(self) -> bytes:
+        """Convert CC file data to raw bytes."""
+        data = bytearray()
+        
+        # CC Header
+        data.extend([
+            (self.cc_length >> 8) & 0xFF,
+            self.cc_length & 0xFF,
+            self.mapping_version,
+            (self.max_read_length >> 8) & 0xFF,
+            self.max_read_length & 0xFF,
+            (self.max_write_length >> 8) & 0xFF,
+            self.max_write_length & 0xFF,
+        ])
+        
+        # NDEF File Control TLV
+        data.extend([
+            self.TLV_NDEF_FILE_CONTROL,  # T
+            0x06,  # L
+            (self.ndef_file_id >> 8) & 0xFF,
+            self.ndef_file_id & 0xFF,
+            (self.ndef_file_size >> 8) & 0xFF,
+            self.ndef_file_size & 0xFF,
+            self.ndef_read_access,
+            self.ndef_write_access,
+        ])
+        
+        # Proprietary File Control TLV
+        data.extend([
+            self.TLV_PROPRIETARY_FILE_CONTROL,  # T
+            0x06,  # L
+            (self.proprietary_file_id >> 8) & 0xFF,
+            self.proprietary_file_id & 0xFF,
+            (self.proprietary_file_size >> 8) & 0xFF,
+            self.proprietary_file_size & 0xFF,
+            self.proprietary_read_access,
+            self.proprietary_write_access,
+        ])
+        
+        # Pad to 32 bytes with zeros
+        while len(data) < 32:
+            data.append(0x00)
+        
+        return bytes(data)
+    
+    def __str__(self) -> str:
+        """Format CC file data for display."""
+        def format_access(code: int) -> str:
+            if code == 0x00:
+                return "FREE (0x00)"
+            elif code == 0xE0 or code == 0xEE:
+                return f"FREE (0x{code:02X} DESFire)"
+            elif code & 0x80:
+                key_no = code & 0x0F
+                return f"KEY_{key_no} (0x{code:02X})"
+            else:
+                return f"0x{code:02X}"
+        
+        return (
+            f"CCFileData(\n"
+            f"  CC Length: 0x{self.cc_length:04X} ({self.cc_length} bytes)\n"
+            f"  Mapping Version: 0x{self.mapping_version:02X} (T4T v{(self.mapping_version >> 4)}.{(self.mapping_version & 0x0F)})\n"
+            f"  Max Read (MLe): {self.max_read_length} bytes\n"
+            f"  Max Write (MLc): {self.max_write_length} bytes\n"
+            f"  \n"
+            f"  NDEF File:\n"
+            f"    File ID: 0x{self.ndef_file_id:04X}\n"
+            f"    Size: {self.ndef_file_size} bytes\n"
+            f"    Read Access: {format_access(self.ndef_read_access)}\n"
+            f"    Write Access: {format_access(self.ndef_write_access)}\n"
+            f"  \n"
+            f"  Proprietary File:\n"
+            f"    File ID: 0x{self.proprietary_file_id:04X}\n"
+            f"    Size: {self.proprietary_file_size} bytes\n"
+            f"    Read Access: {format_access(self.proprietary_read_access)}\n"
+            f"    Write Access: {format_access(self.proprietary_write_access)}\n"
+            f")"
+        )
+    
+    @staticmethod
+    def create_default() -> 'CCFileData':
+        """Create factory default CC file data."""
+        return CCFileData(
+            cc_length=CCFileData.FACTORY_CC_LENGTH,
+            mapping_version=CCFileData.T4T_VERSION_2_0,
+            max_read_length=CCFileData.DEFAULT_MLE,
+            max_write_length=CCFileData.DEFAULT_MLC,
+            ndef_file_id=0xE104,
+            ndef_file_size=256,
+            ndef_read_access=CCFileData.ACCESS_FREE,
+            ndef_write_access=CCFileData.ACCESS_FREE,
+        )
