@@ -260,10 +260,19 @@ class AuthenticatedConnection:
         Returns:
             Command-specific response (parsed by command.parse_response())
         """
+        import logging
+        log = logging.getLogger(__name__)
+        
         # Get components from command
         cmd = command.get_command_byte()
         unencrypted_header = command.get_unencrypted_header()
         plaintext = command.build_command_data()
+        
+        log.debug(f"[AUTH_CONN] Sending command 0x{cmd:02X}")
+        log.debug(f"[AUTH_CONN]   Unencrypted header: {unencrypted_header.hex()}")
+        log.debug(f"[AUTH_CONN]   Plaintext: {plaintext.hex()[:64]}...")
+        log.debug(f"[AUTH_CONN]   Session counter BEFORE: {self.session.session_keys.cmd_counter}")
+        log.debug(f"[AUTH_CONN]   Session Ti: {self.session.session_keys.ti.hex()}")
         
         # Apply crypto transparently based on data alignment
         if len(plaintext) % 16 == 0:
@@ -293,16 +302,35 @@ class AuthenticatedConnection:
         data, sw1, sw2 = self.connection.send_apdu(apdu, use_escape=command.use_escape)
         
         # Check status word
-        import logging
-        log = logging.getLogger(__name__)
+        log.debug(f"[AUTH_CONN] Response: SW={sw1:02X}{sw2:02X}, data={len(data) if data else 0} bytes")
         
         if (sw1, sw2) == (0x91, 0x00):
             # SUCCESS! Increment counter now (Arduino does this AFTER successful response)
             self.session.session_keys.cmd_counter += 1
             log.debug(f"[AUTH_CONN] Command successful, counter incremented to: {self.session.session_keys.cmd_counter}")
+            
+            # CRITICAL: Check if this was a ChangeKey for Key 0 (PICC Master Key)
+            if cmd == 0xC4 and len(unencrypted_header) > 0 and unencrypted_header[0] == 0x00:
+                log.critical("="*70)
+                log.critical("[AUTH_CONN] KEY 0 (PICC MASTER KEY) WAS CHANGED!")
+                log.critical("[AUTH_CONN] Current session is NOW INVALID")
+                log.critical("[AUTH_CONN] All subsequent commands will fail with 91AE")
+                log.critical("[AUTH_CONN] Must re-authenticate with NEW Key 0 to continue")
+                log.critical(f"[AUTH_CONN] Current session: Ti={self.session.session_keys.ti.hex()}, Ctr={self.session.session_keys.cmd_counter}")
+                log.critical("="*70)
         else:
             # FAILURE! Don't increment counter (card didn't increment either)
             log.warning(f"[AUTH_CONN] Command failed with {sw1:02X}{sw2:02X}, counter NOT incremented (stays at {self.session.session_keys.cmd_counter})")
+            log.warning(f"[AUTH_CONN] Session state: Ti={self.session.session_keys.ti.hex()}, Ctr={self.session.session_keys.cmd_counter}")
+            log.warning(f"[AUTH_CONN] Session ENC key: {self.session.session_keys.session_enc_key.hex()}")
+            log.warning(f"[AUTH_CONN] Session MAC key: {self.session.session_keys.session_mac_key.hex()}")
+            
+            if (sw1, sw2) == (0x91, 0xAE):
+                log.error("[AUTH_CONN] 91AE = AUTHENTICATION_ERROR")
+                log.error("[AUTH_CONN] Possible causes:")
+                log.error("[AUTH_CONN]   1. Session is invalid (Key 0 was changed)")
+                log.error("[AUTH_CONN]   2. CMAC verification failed")
+                log.error("[AUTH_CONN]   3. Wrong session keys")
             # Let error handling proceed normally
         
         # Decrypt response if needed

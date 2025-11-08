@@ -1,8 +1,5 @@
 """
-RAW PYSCARD TEST - with CORRECT session key derivation per datasheet.
-
-Implements the CORRECT 32-byte SV formula from NXP datasheet Section 9.1.7:
-SV1 = A5||5A||00||01||00||80||RndA[15..14]||(RndA[13..8] XOR RndB[15..10])||RndB[9..0]||RndA[7..0]
+RAW PYSCARD - FORMAT_PICC with CORRECT session key derivation.
 """
 
 import os
@@ -20,13 +17,13 @@ from ntag424_sdm_provisioner.crypto.crypto_primitives import (
 )
 
 
-def test_with_correct_derivation():
-    """Test GetKeyVersion with CORRECT session key derivation."""
+def test_format_picc():
+    """Test FORMAT_PICC with corrected session keys."""
     
     print("\n" + "="*70)
-    print("RAW PYSCARD - CORRECT SESSION KEY DERIVATION")
+    print("RAW PYSCARD - FORMAT_PICC (0xFC)")
     print("="*70)
-    print()
+    print("\nWARNING: This will ERASE all keys and data!\n")
     
     connection = readers()[0].createConnection()
     connection.connect()
@@ -36,28 +33,23 @@ def test_with_correct_derivation():
     response, sw1, sw2 = connection.transmit(apdu)
     if (sw1, sw2) != (0x90, 0x00):
         return False
-    print("Select PICC: [OK]\n")
+    print("Select: [OK]\n")
     
     # Authenticate
     print("Authenticate:")
     factory_key = bytes(16)
     
-    # Phase 1
     apdu = [0x90, 0x71, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00]
     response, sw1, sw2 = connection.transmit(apdu)
     if (sw1, sw2) != (0x91, 0xAF):
         return False
     
-    # Use crypto_primitives for all auth crypto
+    # Use crypto_primitives for auth
     encrypted_rndb = bytes(response[:16])
     rndb = decrypt_rndb(encrypted_rndb, factory_key)
     rndb_rotated = rotate_left(rndb)
     rnda = os.urandom(16)
     
-    print(f"  RndA: {rnda.hex()}")
-    print(f"  RndB: {rndb.hex()}")
-    
-    # Phase 2
     encrypted = encrypt_auth_response(rnda, rndb_rotated, factory_key)
     
     apdu = [0x90, 0xAF, 0x00, 0x00, 0x20, *list(encrypted), 0x00]
@@ -65,38 +57,35 @@ def test_with_correct_derivation():
     if (sw1, sw2) != (0x91, 0x00):
         return False
     
-    # Decrypt card response
     response_dec = decrypt_auth_response(bytes(response), factory_key)
     ti = response_dec[0:4]
     
     print(f"  Ti: {ti.hex()}")
-    print("  Auth: [OK]\n")
+    print("  [OK]\n")
     
-    # Derive session keys using crypto_primitives
-    print("Session Key Derivation (from crypto_primitives):")
+    # Derive session keys
     session_enc_key, session_mac_key = derive_session_keys(factory_key, rnda, rndb)
-    
-    print(f"  Session ENC: {session_enc_key.hex()}")
     print(f"  Session MAC: {session_mac_key.hex()}\n")
     
-    # GetKeyVersion
-    print("GetKeyVersion:")
-    cmd = 0x64
-    cmd_ctr = 0
-    key_no = 0
+    # FORMAT_PICC (0xFC)
+    print("FORMAT_PICC (0xFC):")
     
+    cmd = 0xFC
+    cmd_ctr = 0
+    
+    # Calculate CMAC (no data for FORMAT_PICC)
     cmac_truncated = calculate_cmac(
         cmd=cmd,
         cmd_ctr=cmd_ctr,
         ti=ti,
-        cmd_header=bytes([key_no]),
+        cmd_header=b'',
         encrypted_data=b'',
         session_mac_key=session_mac_key
     )
     
     print(f"  CMAC: {cmac_truncated.hex()}")
     
-    apdu = [0x90, cmd, 0x00, 0x00, 0x09, key_no, *list(cmac_truncated), 0x00]
+    apdu = [0x90, cmd, 0x00, 0x00, 0x08, *list(cmac_truncated), 0x00]
     print(f"  APDU: {toHexString(apdu)}\n")
     
     response, sw1, sw2 = connection.transmit(apdu)
@@ -104,17 +93,23 @@ def test_with_correct_derivation():
     
     if (sw1, sw2) == (0x91, 0x00):
         print("\n" + "="*70)
-        print("SUCCESS! GETKEYVERSION WORKED!")
+        print("SUCCESS! FORMAT_PICC WORKED!")
         print("="*70)
-        print("\nThe bug was in session key derivation!")
-        print("We were using 8-byte SV, should be 32-byte SV with XOR.")
+        print("\nTag reset to factory defaults")
         return True
     else:
-        print(f"\n[FAILED] {sw1:02X}{sw2:02X}")
+        error_names = {
+            0x911C: "ILLEGAL_COMMAND - Not available",
+            0x911E: "INTEGRITY_ERROR - CMAC wrong",
+            0x917E: "LENGTH_ERROR",
+            0x919E: "PARAMETER_ERROR",
+        }
+        error_code = (sw1 << 8) | sw2
+        print(f"\n[FAILED] {error_names.get(error_code, 'Unknown')}")
         return False
 
 
 if __name__ == '__main__':
-    success = test_with_correct_derivation()
+    success = test_format_picc()
     exit(0 if success else 1)
 

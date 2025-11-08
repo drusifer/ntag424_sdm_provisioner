@@ -260,12 +260,12 @@ class CsvKeyManager:
         )
     
     @contextmanager
-    def provision_tag(self, uid: bytes):
+    def provision_tag(self, uid: bytes, url: str = None):
         """
         Context manager for two-phase commit of tag provisioning.
         
         Usage:
-            with key_manager.provision_tag(uid) as keys:
+            with key_manager.provision_tag(uid, url="https://example.com") as keys:
                 # Phase 1: Keys saved with status='pending'
                 # Provision tag with keys.picc_master_key, etc.
                 ChangeKey(keys.picc_master_key).execute(...)
@@ -274,13 +274,14 @@ class CsvKeyManager:
         
         Args:
             uid: Tag UID as bytes
+            url: Base URL to save in notes field
             
         Yields:
             TagKeys with newly generated keys (status='pending')
             
         Example:
             try:
-                with key_mgr.provision_tag(uid) as keys:
+                with key_mgr.provision_tag(uid, "https://app.com/tap") as keys:
                     # Change keys on tag
                     auth.change_key(0, keys.get_picc_master_key_bytes())
                     auth.change_key(1, keys.get_app_read_key_bytes())
@@ -311,7 +312,7 @@ class CsvKeyManager:
             if success:
                 # Phase 2b: Provisioning succeeded
                 new_keys.status = "provisioned"
-                new_keys.notes = "Successfully provisioned"
+                new_keys.notes = url if url else "Successfully provisioned"
                 self.save_tag_keys(uid, new_keys)
     
     def print_summary(self):

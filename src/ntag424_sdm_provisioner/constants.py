@@ -843,3 +843,6 @@ def describe_status_word(sw1: int, sw2: int) -> str:
         return f"{sw.name} (0x{sw1:02X}{sw2:02X}): {desc}"
     else:
         return f"Unknown status (0x{sw1:02X}{sw2:02X})"
+
+
+GAME_COIN_BASE_URL = "https://script.google.com/a/macros/gutsteins.com/s/AKfycbz2gCQYl_OjEJB26jiUL8253I0bX4czxykkcmt-MnF41lIyX18SLkRgUcJ_VJRJbiwh/exec"

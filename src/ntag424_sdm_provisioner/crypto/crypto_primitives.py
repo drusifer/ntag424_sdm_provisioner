@@ -7,6 +7,7 @@ These functions have been tested against official NXP test vectors and match exa
 All functions follow the NTAG424 DNA / MIFARE DESFire EV2 specifications.
 """
 
+import os
 import zlib
 from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
@@ -205,6 +206,145 @@ def build_key_data(key_no: int, new_key: bytes, old_key: bytes, version: int) ->
         # Rest is already zeros (10 bytes)
     
     return bytes(key_data)
+
+
+def decrypt_rndb(encrypted_rndb: bytes, key: bytes) -> bytes:
+    """
+    Decrypt RndB from authentication Phase 1 response.
+    
+    Per NXP datasheet Section 9.1.5:
+    Uses AES-CBC with zero IV (no padding during authentication).
+    
+    Args:
+        encrypted_rndb: Encrypted RndB from card (16 bytes)
+        key: Authentication key (16 bytes)
+    
+    Returns:
+        Decrypted RndB (16 bytes)
+        
+    Reference:
+        NXP NT4H2421Gx Section 9.1.5
+        Arduino MFRC522 line 62-65
+    """
+    cipher = AES.new(key, AES.MODE_CBC, iv=b'\x00' * 16)
+    return cipher.decrypt(encrypted_rndb)
+
+
+def rotate_left(data: bytes) -> bytes:
+    """
+    Rotate bytes left by 1 byte.
+    
+    Per NXP spec: "RndB rotated left by 1 byte"
+    
+    Args:
+        data: Bytes to rotate (typically 16 bytes)
+    
+    Returns:
+        Rotated bytes
+        
+    Reference:
+        NXP NT4H2421Gx Table 28
+        Arduino MFRC522 line 70-73
+    """
+    return data[1:] + data[:1]
+
+
+def encrypt_auth_response(rnda: bytes, rndb_rotated: bytes, key: bytes) -> bytes:
+    """
+    Encrypt authentication Phase 2 response.
+    
+    Per NXP datasheet Section 9.1.5:
+    Encrypts RndA || RndB' using AES-CBC with zero IV.
+    
+    Args:
+        rnda: Random A from PCD (16 bytes)
+        rndb_rotated: Rotated RndB (16 bytes)
+        key: Authentication key (16 bytes)
+    
+    Returns:
+        Encrypted 32 bytes
+        
+    Reference:
+        NXP NT4H2421Gx Section 9.1.5
+        Arduino MFRC522 line 76-81
+    """
+    plaintext = rnda + rndb_rotated
+    cipher = AES.new(key, AES.MODE_CBC, iv=b'\x00' * 16)
+    return cipher.encrypt(plaintext)
+
+
+def decrypt_auth_response(encrypted_response: bytes, key: bytes) -> bytes:
+    """
+    Decrypt authentication Phase 2 card response.
+    
+    Per NXP datasheet: Ti || RndA' || PDcap2 || PCDcap2
+    
+    Args:
+        encrypted_response: Encrypted response from card (32 bytes)
+        key: Authentication key (16 bytes)
+    
+    Returns:
+        Decrypted 32 bytes
+        
+    Reference:
+        NXP NT4H2421Gx Section 9.1.5
+        Arduino MFRC522 line 96-97
+    """
+    cipher = AES.new(key, AES.MODE_CBC, iv=b'\x00' * 16)
+    return cipher.decrypt(encrypted_response)
+
+
+def derive_session_keys(key: bytes, rnda: bytes, rndb: bytes) -> tuple[bytes, bytes]:
+    """
+    Derive session encryption and MAC keys from RndA, RndB.
+    
+    Uses NTAG424 DNA key derivation per NXP datasheet Section 9.1.7:
+    SV1 = A5||5A||00||01||00||80||RndA[15..14]||(RndA[13..8] XOR RndB[15..10])||RndB[9..0]||RndA[7..0]
+    SV2 = 5A||A5||00||01||00||80||RndA[15..14]||(RndA[13..8] XOR RndB[15..10])||RndB[9..0]||RndA[7..0]
+    
+    This is the FULL 32-byte structure with XOR operations per spec.
+    
+    Args:
+        key: Authentication key (16 bytes)
+        rnda: Random A from PCD (16 bytes)
+        rndb: Random B from PICC (16 bytes)
+    
+    Returns:
+        (session_enc_key, session_mac_key) tuple
+        
+    Reference:
+        NXP NT4H2421Gx Section 9.1.7
+        Arduino MFRC522_NTAG424DNA.cpp lines 2215-2244
+    """
+    # Build 32-byte SV1 per datasheet
+    sv1 = bytearray(32)
+    sv1[0] = 0xA5
+    sv1[1] = 0x5A
+    sv1[2:6] = b'\x00\x01\x00\x80'
+    sv1[6:8] = rnda[0:2]           # RndA[15..14] (first 2 bytes)
+    sv1[8:14] = rndb[0:6]          # RndB[15..10] (first 6 bytes)
+    sv1[14:24] = rndb[6:16]        # RndB[9..0] (last 10 bytes)
+    sv1[24:32] = rnda[8:16]        # RndA[7..0] (last 8 bytes)
+    
+    # XOR: RndA[13..8] with RndB[15..10] per datasheet
+    for i in range(6):
+        sv1[8 + i] ^= rnda[2 + i]
+    
+    # Build 32-byte SV2 (same structure, different label)
+    sv2 = bytearray(sv1)
+    sv2[0] = 0x5A
+    sv2[1] = 0xA5
+    
+    # Calculate session keys using CMAC over full 32-byte SV
+    cmac_enc = CMAC.new(key, ciphermod=AES)
+    cmac_enc.update(bytes(sv1))
+    session_enc_key = cmac_enc.digest()
+    
+    cmac_mac = CMAC.new(key, ciphermod=AES)
+    cmac_mac.update(bytes(sv2))
+    session_mac_key = cmac_mac.digest()
+    
+    return session_enc_key, session_mac_key
 
 
 def build_changekey_apdu(key_no: int, new_key: bytes, old_key: bytes, version: int,

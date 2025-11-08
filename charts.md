@@ -18,6 +18,7 @@ sequenceDiagram
 
     participant Host as Provisioning Host
     participant Reader as NFC Reader
+    
     participant Tag as NTAG424 Tag
 
     %% 1. Establish Communication

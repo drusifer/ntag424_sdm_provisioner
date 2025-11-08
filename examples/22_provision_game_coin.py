@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(project_root, 'src'))
 
 from ntag424_sdm_provisioner.hal import CardManager
 from ntag424_sdm_provisioner.csv_key_manager import CsvKeyManager, TagKeys
+from ntag424_sdm_provisioner.constants import GAME_COIN_BASE_URL
 from ntag424_sdm_provisioner.commands.sdm_commands import (
     SelectPiccApplication,
     GetChipVersion,
@@ -54,69 +55,137 @@ logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
 
+# Import trace utilities for debugging
+from ntag424_sdm_provisioner.trace_util import trace_block
+
+
+def check_tag_state_and_prepare(card, uid: bytes, key_mgr: CsvKeyManager, new_url: str) -> tuple[bool, bool]:
+    """
+    Check tag state: healthy provision uses saved keys, bad state offers reset, new tag provisions.
+    
+    Returns:
+        (continue: bool, was_reset: bool)
+    """
+    with trace_block("Tag Status Check"):
+        try:
+            current_keys = key_mgr.get_tag_keys(uid)
+            
+            # Healthy provisioned tag - compare URLs
+            if current_keys.status == "provisioned":
+                current_url = current_keys.notes if current_keys.notes else "(no URL)"
+                log.info("")
+                log.info("Tag Status: PROVISIONED (healthy)")
+                log.info(f"  Current URL: {current_url}")
+                log.info(f"  New URL:     {new_url}")
+                
+                if current_url == new_url:
+                    log.info("  URLs match - already configured")
+                    return False, False  # Nothing to do
+                
+                log.info("")
+                log.info("Options: 1=Update URL | 2=Re-provision | 3=Cancel")
+                response = input("Select (1-3): ").strip()
+                return (response in ['1', '2']), False
+            
+            # Bad state - offer reset
+            elif current_keys.status in ["failed", "pending"]:
+                log.warning(f"Tag Status: {current_keys.status.upper()} (bad state)")
+                log.warning("  RESET recommended")
+                response = input("Reset to factory? (Y/n): ").strip().lower()
+                
+                if response != 'n':
+                    factory_key = bytes(16)
+                    with trace_block("Factory Reset"):
+                        auth_conn = AuthenticateEV2(key=factory_key, key_no=0).execute(card)
+                        auth_conn.send(ChangeKey(0, factory_key, factory_key, 0x00))
+                    
+                    factory_keys = TagKeys.from_factory_keys(uid.hex().upper())
+                    key_mgr.save_tag_keys(uid, factory_keys)
+                    log.info("  Reset complete")
+                    return True, True
+                return True, False
+            
+            # Factory - just provision
+            else:
+                log.info("Tag Status: FACTORY (new)")
+                return True, False
+                
+        except Exception:
+            log.info("Tag Status: NOT IN DATABASE (factory assumed)")
+            return True, False
 
 
 def provision_game_coin():
     """Provision an NTAG424 DNA tag as a game coin."""
     
-    print("=" * 70)
-    print("Example 22: Provision Game Coin with SDM/SUN")
-    print("=" * 70)
-    print()
-    print("This will provision your NTAG424 DNA tag with unique keys and SDM.")
-    print()
-    print("[WARNING] This will:")
-    print("  - Change all keys on the tag to new random values")
-    print("  - Save keys to tag_keys.csv for future access")
-    print("  - Enable SDM for tap-unique authenticated URLs")
-    print()
-    print("[TIP] If authentication fails (0x91AD rate limit):")
-    print("  - Remove tag and wait 30-60 seconds")
-    print("  - Use a fresh tag if available")
-    print()
+    log.info("=" * 70)
+    log.info("Example 22: Provision Game Coin with SDM/SUN")
+    log.info("=" * 70)
+    log.info("")
+    log.info("This will provision your NTAG424 DNA tag with unique keys and SDM.")
+    log.info("")
+    log.warning("This will:")
+    log.warning("  - Change all keys on the tag to new random values")
+    log.warning("  - Save keys to tag_keys.csv for future access")
+    log.warning("  - Enable SDM for tap-unique authenticated URLs")
+    log.info("")
+    log.info("TIP: If authentication fails (0x91AD rate limit):")
+    log.info("  - Remove tag and wait 30-60 seconds")
+    log.info("  - Use a fresh tag if available")
+    log.info("")
     
     # Initialize key manager
     key_mgr = CsvKeyManager()
     
     try:
         with CardManager(reader_index=0) as card:
-            print("Please place your NTAG424 DNA tag on the reader...")
-            print()
-            print("[OK] Connected to reader")
-            print()
+            log.info("Please place your NTAG424 DNA tag on the reader...")
+            log.info("")
+            log.info("Connected to reader")
+            log.info("")
             
             # Step 1: Get chip information
-            print("Step 1: Get Chip Information")
-            print("-" * 70)
+            log.info("Step 1: Get Chip Information")
+            log.info("-" * 70)
             
             SelectPiccApplication().execute(card)
-            print("  [OK] Application selected")
+            log.info("  Application selected")
             
             version_info = GetChipVersion().execute(card)
             uid = version_info.uid
-            print(f"  Chip UID: {uid.hex().upper()}")
-            print(f"  Chip Info: {version_info}")
-            print()
+            log.info(f"  Chip UID: {uid.hex().upper()}")
+            log.info(f"  Chip Info: {version_info}")
+            log.info("")
             
-            # Step 2: Get current keys from database
-            print("Step 2: Load Current Keys")
-            print("-" * 70)
+            # Define base URL
+            base_url = GAME_COIN_BASE_URL
+            
+            # Check tag state and get user decision
+            continue_provision, was_reset = check_tag_state_and_prepare(card, uid, key_mgr, base_url)
+            if not continue_provision:
+                log.info("\nNothing to do - exiting")
+                return 0
+            
+            # Step 2: Get current keys from database (refresh after possible reset)
+            log.info("Step 2: Load Current Keys")
+            log.info("-" * 70)
             current_keys = key_mgr.get_tag_keys(uid)
-            print(f"  Current Status: {current_keys.status}")
-            if current_keys.status == "factory":
-                print("  [INFO] Tag has factory keys - first provision")
-            elif current_keys.status in ["failed", "pending"]:
-                print(f"  [INFO] Previous provision incomplete - tag still has factory keys")
-                # Use factory keys instead of saved keys
+            log.info(f"  Current Status: {current_keys.status}")
+            
+            # After reset OR if bad/factory state, use factory keys
+            if was_reset or current_keys.status in ["factory", "failed", "pending"]:
+                if was_reset:
+                    log.info("  Using factory keys (just reset)")
+                else:
+                    log.info("  Using factory keys")
                 current_keys = TagKeys.from_factory_keys(uid.hex().upper())
             else:
-                print("  [INFO] Tag already provisioned - re-provisioning")
-            print()
+                log.info("  Using saved keys for re-provision")
+            log.info("")
             
             # Step 3: Build NDEF URL template
-            print("Step 3: Build SDM URL Template")
-            print("-" * 70)
-            base_url = "https://globalheadsandtails.com/tap"
+            log.info("Step 3: Build SDM URL Template")
+            log.info("-" * 70)
             uid_placeholder = "00000000000000"      # 7 bytes
             counter_placeholder = "000000"           # 3 bytes
             cmac_placeholder = "0000000000000000"   # 8 bytes
@@ -128,12 +197,12 @@ def provision_game_coin():
                 f"cmac={cmac_placeholder}"
             )
             
-            print(f"  URL: {url_with_placeholders}")
-            print(f"  Length: {len(url_with_placeholders)} characters")
+            log.info(f"  URL: {url_with_placeholders}")
+            log.info(f"  Length: {len(url_with_placeholders)} characters")
             
             # Build NDEF message
             ndef_message = build_ndef_uri_record(url_with_placeholders)
-            print(f"  NDEF Size: {len(ndef_message)} bytes")
+            log.info(f"  NDEF Size: {len(ndef_message)} bytes")
             
             # Calculate SDM offsets
             template = SDMUrlTemplate(
@@ -145,77 +214,77 @@ def provision_game_coin():
             )
             
             offsets = calculate_sdm_offsets(template)
-            print(f"  SDM Offsets: {offsets}")
-            print()
+            log.info(f"  SDM Offsets: {offsets}")
+            log.info("")
 
             # Step 4: Authenticate with current keys and change PICC Master Key
-            print("Step 4: Change All Keys (Per charts.md sequence)")
-            print("-" * 70)
+            log.info("Step 4: Change All Keys (Per charts.md sequence)")
+            log.info("-" * 70)
             current_picc_key = current_keys.get_picc_master_key_bytes()
-            print(f"  Authenticating with {'factory' if current_keys.status == 'factory' else 'saved'} PICC Master Key...")
+            log.info(f"  Authenticating with {'factory' if current_keys.status == 'factory' else 'saved'} PICC Master Key...")
             
             # Start two-phase commit for provisioning
-            with key_mgr.provision_tag(uid) as new_keys:
-                print("  [Phase 1] New keys generated and saved (status='pending')")
-                print(f"    PICC Master: {new_keys.picc_master_key[:16]}...")
-                print(f"    App Read:    {new_keys.app_read_key[:16]}...")
-                print(f"    SDM MAC:     {new_keys.sdm_mac_key[:16]}...")
-                print()
+            with key_mgr.provision_tag(uid, url=base_url) as new_keys:
+                log.info("  [Phase 1] New keys generated and saved (status='pending')")
+                log.info(f"    PICC Master: {new_keys.picc_master_key[:16]}...")
+                log.info(f"    App Read:    {new_keys.app_read_key[:16]}...")
+                log.info(f"    SDM MAC:     {new_keys.sdm_mac_key[:16]}...")
+                log.info("")
                 
                 # Authenticate with CURRENT (old) PICC Master Key
                 # Per charts.md: Change ALL keys in ONE auth session!
                 with AuthenticateEV2(current_picc_key, key_no=0).execute(card) as auth_conn:
-                    print("  [OK] Authenticated with current key")
-                    print()
-                    print("  Changing all keys in single session (prevents 0x91AD)...")
+                    log.info("   Authenticated with current key")
+                    log.info("")
+                    log.info("  Changing all keys in single session (prevents 0x91AD)...")
                     
                     # Change Key 0 (PICC Master Key)
-                    print("    Key 0 (PICC Master)...", end=" ")
+                    log.info("    Key 0 (PICC Master)...", end=" ")
                     res = ChangeKey(
                         key_no_to_change=0,
                         new_key=new_keys.get_picc_master_key_bytes(),
                         old_key=None
                     ).execute(auth_conn)
-                    print(f"response:{res}")
+                    log.info(f"response:{res}")
                     
                     # Change Key 1 (App Read Key) - SAME SESSION!
-                    print("    Key 1 (App Read)...", end=" ")
+                    log.info("    Key 1 (App Read)...", end=" ")
                     res = ChangeKey(
                         key_no_to_change=1,
                         new_key=new_keys.get_app_read_key_bytes(),
                         old_key=None
                     ).execute(auth_conn)
-                    print(f"response:{res}")
+                    log.info(f"response:{res}")
                     
                     # Change Key 3 (SDM MAC Key) - SAME SESSION!
-                    print("    Key 3 (SDM MAC)...", end=" ")
+                    log.info("    Key 3 (SDM MAC)...", end=" ")
                     res = ChangeKey(
                         key_no_to_change=3,
                         new_key=new_keys.get_sdm_mac_key_bytes(),
                         old_key=None
                     ).execute(auth_conn)
-                    print(f"response:{res}")
-                    print("  [OK] All keys changed in single session")
+                    log.info(f"response:{res}")
+                    log.info("   All keys changed in single session")
                 
                 # Context manager will auto-commit on success
-                print("  [Phase 2] All keys changed successfully!")
-                print("  [OK] Keys updated (status='provisioned')")
-                print()
+                log.info("  [Phase 2] All keys changed successfully!")
+                log.info("   Keys updated (status='provisioned')")
+                log.info("")
             
             # Step 5: Re-authenticate with new PICC Master Key (only ONE re-auth)
-            print("Step 5: Re-authenticate with New PICC Master Key")
-            print("        (Single re-auth prevents 0x91AD rate limit)")
-            print("-" * 70)
+            log.info("Step 5: Re-authenticate with New PICC Master Key")
+            log.info("        (Single re-auth prevents 0x91AD rate limit)")
+            log.info("-" * 70)
             new_picc_key = key_mgr.get_key(uid, key_no=0)
-            print("  Authenticating with new key...")
+            log.info("  Authenticating with new key...")
             
             with AuthenticateEV2(new_picc_key, key_no=0).execute(card) as auth_conn:
-                print("  [OK] Authenticated with new key")
-                print()
+                log.info("   Authenticated with new key")
+                log.info("")
                 
                 # Step 7: Configure SDM
-                print("Step 7: Configure SDM on NDEF File")
-                print("-" * 70)
+                log.info("Step 7: Configure SDM on NDEF File")
+                log.info("-" * 70)
                 
                 access_rights = AccessRights(
                     read=AccessRight.FREE,
@@ -236,80 +305,80 @@ def provision_game_coin():
                     offsets=offsets
                 )
                 
-                print(f"  Config: {sdm_config}")
-                print("  Configuring SDM...")
+                log.info(f"  Config: {sdm_config}")
+                log.info("  Configuring SDM...")
                 
                 try:
                     # ChangeFileSettings (PLAIN mode for SDM config)
                     ChangeFileSettings(sdm_config).execute(card)
-                    print("  [OK] SDM configured successfully!")
+                    log.info("   SDM configured successfully!")
                 except ApduError as e:
-                    print(f"  [WARNING] SDM configuration failed: {e}")
-                    print("  [INFO] This is a known issue - continuing with NDEF write")
-                    print("  [INFO] SDM placeholders won't be replaced (static URL only)")
-                print()
+                    log.warning(f"  SDM configuration failed: {e}")
+                    log.info("   This is a known issue - continuing with NDEF write")
+                    log.info("   SDM placeholders won't be replaced (static URL only)")
+                log.info("")
                 
                 # Step 8: Write NDEF message
-                print("Step 8: Write NDEF Message")
-                print("-" * 70)
-                print("  Selecting NDEF file...")
+                log.info("Step 8: Write NDEF Message")
+                log.info("-" * 70)
+                log.info("  Selecting NDEF file...")
                 ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
-                print("  [OK] NDEF file selected")
+                log.info("   NDEF file selected")
                 
-                print(f"  Writing {len(ndef_message)} bytes...")
+                log.info(f"  Writing {len(ndef_message)} bytes...")
                 WriteNdefMessage(ndef_data=ndef_message).execute(card)
-                print("  [OK] NDEF message written")
+                log.info("   NDEF message written")
                 
                 # Re-select PICC application
                 SelectPiccApplication().execute(card)
-                print("  [OK] PICC application re-selected")
-                print()
+                log.info("   PICC application re-selected")
+                log.info("")
             
             # Step 9: Verify provisioning
-            print("Step 9: Verify Provisioning")
-            print("-" * 70)
+            log.info("Step 9: Verify Provisioning")
+            log.info("-" * 70)
             
             try:
                 counter = GetFileCounters(file_no=0x02).execute(card)
-                print(f"  [OK] SDM counter: {counter}")
-                print("  [SUCCESS] SDM is working!")
+                log.info(f"  [OK] SDM counter: {counter}")
+                log.info("  [SUCCESS] SDM is working!")
             except ApduError as e:
-                print(f"  [INFO] GetFileCounters: {e}")
-                print("  [INFO] SDM may not be fully configured (expected if ChangeFileSettings failed)")
-            print()
+                log.info(f"  [INFO] GetFileCounters: {e}")
+                log.info("   SDM may not be fully configured (expected if ChangeFileSettings failed)")
+            log.info("")
             
             # Summary
-            print("=" * 70)
-            print("Provisioning Summary")
-            print("=" * 70)
-            print()
-            print("SUCCESS! Your game coin has been provisioned.")
-            print()
-            print(f"Tag UID: {uid.hex().upper()}")
-            print(f"Keys saved to: tag_keys.csv")
-            print()
-            print("When tapped, the coin will generate:")
-            print(f"  {base_url}?uid=[UID]&ctr=[COUNTER]&cmac=[CMAC]")
-            print()
-            print("Next Steps:")
-            print("  1. Tap coin with NFC phone")
-            print("  2. Phone browser opens with tap-unique URL")
-            print("  3. Implement server validation endpoint")
-            print("  4. Server verifies CMAC and counter")
-            print("  5. Deliver game reward!")
-            print()
-            print("[IMPORTANT] Keys saved in tag_keys.csv - keep this file secure!")
-            print()
+            log.info("=" * 70)
+            log.info("Provisioning Summary")
+            log.info("=" * 70)
+            log.info("")
+            log.info("SUCCESS! Your game coin has been provisioned.")
+            log.info("")
+            log.info(f"Tag UID: {uid.hex().upper()}")
+            log.info(f"Keys saved to: tag_keys.csv")
+            log.info("")
+            log.info("When tapped, the coin will generate:")
+            log.info(f"  {base_url}?uid=[UID]&ctr=[COUNTER]&cmac=[CMAC]")
+            log.info("")
+            log.info("Next Steps:")
+            log.info("  1. Tap coin with NFC phone")
+            log.info("  2. Phone browser opens with tap-unique URL")
+            log.info("  3. Implement server validation endpoint")
+            log.info("  4. Server verifies CMAC and counter")
+            log.info("  5. Deliver game reward!")
+            log.info("")
+            log.info("[IMPORTANT] Keys saved in tag_keys.csv - keep this file secure!")
+            log.info("")
             
     except KeyboardInterrupt:
-        print("\n\n[INTERRUPTED] Stopped by user")
+        log.info("\n\n[INTERRUPTED] Stopped by user")
         return 1
     except ApduError as e:
-        print(f"\n[ERROR] {e}")
-        print("\n[TIP] Check tag_keys.csv for current key status")
+        log.error(f"\n {e}")
+        log.info("\n[TIP] Check tag_keys.csv for current key status")
         return 1
     except Exception as e:
-        print(f"\n[ERROR] Unexpected error: {e}")
+        log.error(f"\n Unexpected error: {e}")
         import traceback
         traceback.print_exc()
         return 1
