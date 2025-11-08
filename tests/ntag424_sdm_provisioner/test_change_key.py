@@ -1,7 +1,7 @@
-"""Unit tests for DNA_Calc change key functionality."""
+"""Unit tests for DNA_Calc reference implementation."""
 
 import pytest
-from src.ntag424_sdm_provisioner.commands.change_key import DNA_Calc, CRC32
+from tests.ntag424_sdm_provisioner.dna_calc_reference import DNA_Calc, CRC32
 
 
 class TestCRC32:

@@ -65,14 +65,11 @@ def authenticate_example():
             print("   This might not be an NTAG424 DNA tag")
             return
         
-        # Create session and authenticate
-        print("🔑 Creating authentication session...")
-        session = Ntag424AuthSession(FACTORY_KEY)
-        print(f"🔑 Session created with key: {session.key.hex().upper()}")
-        
+        # Authenticate using type-safe API
         print("🔑 Starting authentication process...")
+        print(f"🔑 Using key: {FACTORY_KEY.hex().upper()}")
         
-        # Try different keys in case factory key isn't working
+        # Try different keys
         keys_to_try = [
             (0, FACTORY_KEY, "Factory Key (all zeros)"),
             (1, FACTORY_KEY, "Factory Key (all zeros)"),
@@ -81,12 +78,12 @@ def authenticate_example():
             (4, FACTORY_KEY, "Factory Key (all zeros)")
         ]
         
-        session_keys = None
+        auth_conn = None
         for key_no, key, description in keys_to_try:
             print(f"\n🔑 Trying {description} for key {key_no}...")
             try:
-                session = Ntag424AuthSession(key)
-                session_keys = session.authenticate(card, key_no=key_no)
+                from ntag424_sdm_provisioner.commands.sdm_commands import AuthenticateEV2
+                auth_conn = AuthenticateEV2(key, key_no).execute(card)
                 print(f"✅ Authentication successful with {description}!")
                 break
             except Exception as e:
@@ -95,29 +92,16 @@ def authenticate_example():
                     print(f"   Status Word: 0x{e.sw1:02X}{e.sw2:02X}")
                 continue
         
-        if session_keys is None:
+        if auth_conn is None:
             print(f"❌ Authentication failed with all keys!")
-            print(f"   Error type: ApduError")
-            print(f"   Status Word: 0x917E")
-            print(f"   Error Category: COMMUNICATION (Category 1)")
-            
-            print("\n🔍 Debugging information:")
-            print("   - Make sure you have a brand new NTAG424 DNA tag")
-            print("   - Check that the tag is properly positioned on the reader")
-            print("   - Verify the tag hasn't been previously configured")
-            print("   - Try removing and re-tapping the tag")
-            print("   - The tag may have been previously provisioned with different keys")
-            
-            return  # Exit early on authentication failure
+            return
         
         # Authentication was successful
         print(f"\n✅ Authentication successful!")
-        print(f"   Session keys: {session_keys}")
-        print(f"   Transaction ID: {session_keys.ti.hex().upper()}")
-        print(f"   Session ENC key: {session_keys.session_enc_key.hex().upper()}")
-        print(f"   Session MAC key: {session_keys.session_mac_key.hex().upper()}")
+        print(f"   Session keys: {auth_conn.session.session_keys}")
+        print(f"   Transaction ID: {auth_conn.session.session_keys.ti.hex().upper()}")
         
-        # Now you can use the session for authenticated commands
+        # Now use authenticated connection for commands
         print("\n📝 Testing authenticated command...")
         
         # Example: Change file settings with CMAC protection
@@ -133,7 +117,8 @@ def authenticate_example():
         )
         
         try:
-            ChangeFileSettings(config).execute(card, session=session)
+            from ntag424_sdm_provisioner.commands.change_file_settings import ChangeFileSettingsAuth
+            ChangeFileSettingsAuth(config).execute(auth_conn)
             print("✅ Command executed with CMAC protection")
         except Exception as e:
             print(f"❌ Command failed: {e}")

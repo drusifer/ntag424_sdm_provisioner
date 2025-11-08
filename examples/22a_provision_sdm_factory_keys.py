@@ -146,7 +146,8 @@ def provision_sdm_factory_keys():
                 print("  Calling ChangeFileSettings...")
                 
                 try:
-                    ChangeFileSettings(sdm_config).execute(card, session=auth_conn.session)
+                    from ntag424_sdm_provisioner.commands.change_file_settings import ChangeFileSettingsAuth
+                    ChangeFileSettingsAuth(sdm_config).execute(auth_conn)
                     print("  [OK] SDM configured successfully!")
                 except ApduError as e:
                     print(f"  [FAIL] {e}")

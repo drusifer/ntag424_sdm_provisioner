@@ -31,8 +31,8 @@ from ntag424_sdm_provisioner.commands.sdm_commands import (
     SelectPiccApplication,
     GetChipVersion,
     AuthenticateEV2,
-    ChangeKey,
 )
+from ntag424_sdm_provisioner.commands.change_key import ChangeKey
 from ntag424_sdm_provisioner.commands.get_file_counters import GetFileCounters
 from ntag424_sdm_provisioner.commands.change_file_settings import ChangeFileSettings
 from ntag424_sdm_provisioner.commands.sun_commands import WriteNdefMessage
@@ -47,6 +47,13 @@ from ntag424_sdm_provisioner.constants import (
     AccessRight,
     AccessRights,
 )
+
+
+import logging
+logging.basicConfig(level=logging.DEBUG)
+log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
+
 
 
 def provision_game_coin():
@@ -140,9 +147,9 @@ def provision_game_coin():
             offsets = calculate_sdm_offsets(template)
             print(f"  SDM Offsets: {offsets}")
             print()
-            
+
             # Step 4: Authenticate with current keys and change PICC Master Key
-            print("Step 4: Change PICC Master Key (Key 0)")
+            print("Step 4: Change All Keys (Per charts.md sequence)")
             print("-" * 70)
             current_picc_key = current_keys.get_picc_master_key_bytes()
             print(f"  Authenticating with {'factory' if current_keys.status == 'factory' else 'saved'} PICC Master Key...")
@@ -156,56 +163,48 @@ def provision_game_coin():
                 print()
                 
                 # Authenticate with CURRENT (old) PICC Master Key
+                # Per charts.md: Change ALL keys in ONE auth session!
                 with AuthenticateEV2(current_picc_key, key_no=0).execute(card) as auth_conn:
                     print("  [OK] Authenticated with current key")
+                    print()
+                    print("  Changing all keys in single session (prevents 0x91AD)...")
                     
                     # Change Key 0 (PICC Master Key)
-                    print("  Changing Key 0 (PICC Master)...", end=" ")
-                    ChangeKey(
+                    print("    Key 0 (PICC Master)...", end=" ")
+                    res = ChangeKey(
                         key_no_to_change=0,
                         new_key=new_keys.get_picc_master_key_bytes(),
-                        old_key=current_picc_key
-                    ).execute(card, session=auth_conn.session)
-                    print("[OK]")
-                print()
-                
-                # Step 5: Re-authenticate with NEW PICC Master Key to change other keys
-                print("Step 5: Re-authenticate and Change Other Keys")
-                print("-" * 70)
-                print("  Re-authenticating with NEW PICC Master Key...")
-                
-                with AuthenticateEV2(new_keys.get_picc_master_key_bytes(), key_no=0).execute(card) as auth_conn:
-                    print("  [OK] Authenticated with new key")
-                    print()
+                        old_key=None
+                    ).execute(auth_conn)
+                    print(f"response:{res}")
                     
-                    print("  Changing remaining keys...")
-                    
-                    # Change Key 1 (App Read Key)
-                    print("    Changing Key 1 (App Read)...", end=" ")
-                    ChangeKey(
+                    # Change Key 1 (App Read Key) - SAME SESSION!
+                    print("    Key 1 (App Read)...", end=" ")
+                    res = ChangeKey(
                         key_no_to_change=1,
                         new_key=new_keys.get_app_read_key_bytes(),
-                        old_key=current_keys.get_app_read_key_bytes()
-                    ).execute(card, session=auth_conn.session)
-                    print("[OK]")
+                        old_key=None
+                    ).execute(auth_conn)
+                    print(f"response:{res}")
                     
-                    # Change Key 3 (SDM MAC Key)
-                    print("    Changing Key 3 (SDM MAC)...", end=" ")
-                    ChangeKey(
+                    # Change Key 3 (SDM MAC Key) - SAME SESSION!
+                    print("    Key 3 (SDM MAC)...", end=" ")
+                    res = ChangeKey(
                         key_no_to_change=3,
                         new_key=new_keys.get_sdm_mac_key_bytes(),
-                        old_key=current_keys.get_sdm_mac_key_bytes()
-                    ).execute(card, session=auth_conn.session)
-                    print("[OK]")
-                    print()
+                        old_key=None
+                    ).execute(auth_conn)
+                    print(f"response:{res}")
+                    print("  [OK] All keys changed in single session")
                 
                 # Context manager will auto-commit on success
                 print("  [Phase 2] All keys changed successfully!")
                 print("  [OK] Keys updated (status='provisioned')")
                 print()
             
-            # Step 6: Re-authenticate with new PICC Master Key
-            print("Step 6: Re-authenticate with New PICC Master Key")
+            # Step 5: Re-authenticate with new PICC Master Key (only ONE re-auth)
+            print("Step 5: Re-authenticate with New PICC Master Key")
+            print("        (Single re-auth prevents 0x91AD rate limit)")
             print("-" * 70)
             new_picc_key = key_mgr.get_key(uid, key_no=0)
             print("  Authenticating with new key...")
@@ -241,9 +240,8 @@ def provision_game_coin():
                 print("  Configuring SDM...")
                 
                 try:
-                    # ChangeFileSettings (requires authentication for SDM config)
-                    # Note: Currently debugging 0x917E/0x91AE errors
-                    ChangeFileSettings(sdm_config).execute(auth_conn)
+                    # ChangeFileSettings (PLAIN mode for SDM config)
+                    ChangeFileSettings(sdm_config).execute(card)
                     print("  [OK] SDM configured successfully!")
                 except ApduError as e:
                     print(f"  [WARNING] SDM configuration failed: {e}")

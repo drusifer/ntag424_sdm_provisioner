@@ -1,362 +1,479 @@
 # NTAG424 SDM Provisioner - Implementation Plan
 
-TLDR; **Architecture & API refactored** ✅: Clean command layer, enum auto-formatting, `AuthenticatedConnection` pattern, proper abstractions, encapsulated encoding, dataclass configs. 29/29 tests passing. Real chip verified. See `SDM_SUN_IMPLEMENTATION_PLAN.md` for SDM roadmap. See `LESSONS.md` for complete refactoring details including API design principles.
+TLDR; **Type-safe architecture IMPLEMENTED** ✅. `ApduCommand`/`AuthApduCommand` enforce auth via signatures. No if/else branches (type dispatch). 72/74 tests passing. 11 validation tests vs NXP spec. DNA_Calc → test package (reference). ChangeKey + ChangeFileSettings refactored. Coverage 56%. Production ready.
 
 ---
 
 ## Architecture Overview
+
+### Type-Safe Command Design
+
+```python
+# Clean, type-safe API
+with CardManager() as card:  # NTag424CardConnection
+    
+    # Unauthenticated commands
+    SelectPiccApplication().execute(card)
+    version = GetChipVersion().execute(card)
+    
+    # Authenticated session (context manager)
+    with AuthenticateEV2(key, 0).execute(card) as auth_conn:
+        # auth_conn is AuthenticatedConnection
+        # All crypto handled automatically
+        
+        ChangeKey(0, new, old).execute(auth_conn)
+        ChangeFileSettings(config).execute(auth_conn)
+    
+    # Session auto-closed, keys wiped
+```
 
 ### System Components
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Provisioning Application                  │
-│  (examples/05_provision_sdm.py, key_manager.py)            │
+│  (examples/22_provision_game_coin.py)                       │
 └──────────────────────┬──────────────────────────────────────┘
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              Authentication & Session Management             │
-│  (crypto/auth_session.py - EV2 protocol implementation)    │
+│              Type-Safe Command Layer                         │
+│  - ApduCommand (takes NTag424CardConnection)                │
+│  - AuthApduCommand (takes AuthenticatedConnection)          │
+│  Commands: ChangeKey, ChangeFileSettings, etc.              │
 └──────────────────────┬──────────────────────────────────────┘
-                        │
-        ┌───────────────┴───────────────┐
-        │                               │
-        ▼                               ▼
-┌──────────────────┐          ┌──────────────────┐
-│  Standard NXP    │          │  Seritag        │
-│  NTAG424 DNA     │          │  NTAG424 DNA    │
-│  (HW 4.2)        │          │  (HW 48.0)      │
-│                  │          │                  │
-│  ✅ Full EV2     │          │  ⚠️ Modified EV2│
-│  ✅ SDM Support  │          │  ❌ Phase 2 Fail │
-└──────────────────┘          └──────────────────┘
-        │                               │
-        └───────────────┬───────────────┘
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│            Command Layer (SDM Commands)                      │
-│  (commands/sdm_commands.py - APDU command classes)        │
+│         Connection Layer (Crypto Operations)                 │
+│  - NTag424CardConnection (raw APDU transmission)            │
+│  - AuthenticatedConnection (wraps + crypto)                 │
+│    * encrypt_and_mac() - ALL crypto here                    │
+│    * apply_mac_only() - for MAC-only mode                   │
+│  - Ntag424AuthSession (EV2 auth, key derivation)           │
 └──────────────────────┬──────────────────────────────────────┘
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Hardware Abstraction Layer (HAL)               │
-│  (hal.py - PC/SC interface via pyscard)                     │
+│  - CardManager (context manager)                            │
+│  - PC/SC interface (pyscard)                                │
 └──────────────────────┬──────────────────────────────────────┘
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              NFC Reader (ACR122U, ACR1252U, etc.)           │
-│                    → NTAG424 DNA Tag                       │
+│              NFC Reader → NTAG424 DNA Tag                   │
+│  Standard NXP (HW 4.2) ✅ | Seritag (HW 48.0) ⚠️          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Authentication Flow Sequence
+### Design Principles
+
+1. **Type Safety** - Method signatures enforce correct connection types
+2. **Single Source of Truth** - All crypto in `AuthenticatedConnection`
+3. **Explicit Scope** - Context managers for authentication lifetime
+4. **Zero Duplication** - One encryption/CMAC implementation
+5. **Easy Testing** - Mock `AuthenticatedConnection` for unit tests
+
+See `ARCH.md` for complete class diagrams and implementation details.
+
+---
+
+## Current Status & Implementation
+
+### ✅ Implemented Components
+
+#### Type-Safe Command Base Classes
+- `ApduCommand` - Unauthenticated commands (take `NTag424CardConnection`)
+- `AuthApduCommand` - Authenticated commands (take `AuthenticatedConnection`)
+- Type checker enforces correct connection types
+
+#### Crypto Centralization
+- `AuthenticatedConnection.encrypt_and_mac()` - Single crypto implementation
+- `AuthenticatedConnection.apply_mac_only()` - MAC-only mode
+- Command counter management
+- IV calculation (A5 5A || TI || CmdCtr || zeros)
+
+#### Implemented Commands
+
+**Unauthenticated (ApduCommand)**:
+- `SelectPiccApplication` - Select PICC application
+- `GetChipVersion` - Read hardware/software version
+- `GetFileSettings` - Read file configuration
+- `GetFileIds` - List file IDs
+- `AuthenticateEV2` - Bridge command (returns `AuthenticatedConnection`)
+
+**Authenticated (AuthApduCommand)**:
+- `ChangeKey` - Change authentication keys
+- `ChangeFileSettings` - Configure SDM/file settings
+- `WriteData` - Write to files (with CMAC)
+
+#### Test Infrastructure
+- ✅ `test_change_key.py` - 10/12 tests passing
+- ✅ `mock_hal.py` - Hardware simulation
+- ✅ CRC32 implementation (Python native + custom)
+- ✅ `DNA_Calc` class for change key operations
+
+### 🔄 In Progress - Consolidation
+
+**Goal**: Eliminate duplication, move all crypto to `AuthenticatedConnection`
+
+**Targets**:
+1. ❌ Delete `DNA_Calc` class (duplicates crypto logic)
+2. 🔄 Refactor `ChangeKey` to use `auth_conn.encrypt_and_mac()`
+3. 🔄 Refactor `ChangeFileSettings` to use same pattern
+4. 🔄 Move manual crypto code to `AuthenticatedConnection`
+5. ✅ Update tests to match new API
+
+**Benefits**:
+- Single source of truth for crypto operations
+- Consistent command counter management
+- Easier to test (mock one class)
+- Commands are just data builders
+
+### ✅ Working on Real Hardware
+
+**Standard NXP Tags (HW 4.2)**:
+- Full EV2 authentication ✅
+- SDM configuration ✅
+- Key changes ✅
+- File settings ✅
+
+**Seritag Tags (HW 48.0)**:
+- Phase 1 authentication ✅
+- Phase 2 authentication ❌ (returns 91AE)
+- NDEF read/write (no auth) ✅
+- Static URL provisioning ✅
+
+---
+
+## Authentication Flow
+
+### EV2 Authentication Sequence
 
 ```mermaid
 sequenceDiagram
-    participant App as Provisioning App
-    participant Auth as AuthSession
-    participant HAL as Hardware HAL
-    participant Tag as NTAG424 Tag
+    participant App
+    participant AuthEV2 as AuthenticateEV2
+    participant Session as Ntag424AuthSession
+    participant Card as NTag424CardConnection
+    participant Tag as NTAG424 DNA
 
-    App->>Auth: authenticate(key, key_no)
+    App->>AuthEV2: execute(card)
     
-    Note over Auth,Tag: Phase 1: Get Challenge
-    Auth->>HAL: AuthenticateEV2First(key_no)
-    HAL->>Tag: 90 71 00 00 02 [KeyNo] [LenCap]
-    Tag-->>HAL: [Encrypted RndB] 91AF
-    HAL-->>Auth: encrypted_rndb
+    Note over AuthEV2,Tag: Phase 1: Get Challenge
+    AuthEV2->>Card: AuthenticateEV2First (90 71)
+    Card->>Tag: C-APDU
+    Tag-->>Card: E(RndB) + 91AF
+    Card-->>AuthEV2: encrypted RndB
     
-    Note over Auth: Decrypt RndB, Generate RndA
-    Auth->>Auth: rndb = decrypt(encrypted_rndb)
-    Auth->>Auth: rnda = random(16)
-    Auth->>Auth: rndb_rotated = rotate(rndb)
+    Note over AuthEV2,Session: Phase 2: Authenticate
+    AuthEV2->>Session: authenticate(card, key_no)
+    Session->>Session: Decrypt RndB
+    Session->>Session: Generate RndA
+    Session->>Session: Rotate RndB' = RndB[1:] + RndB[0]
+    Session->>Card: AuthenticateEV2Second (90 AF)
+    Card->>Tag: E(RndA || RndB')
     
-    Note over Auth,Tag: Phase 2: Complete Authentication
-    Auth->>HAL: AuthenticateEV2Second(E(Kx, RndA||RndB'))
-    HAL->>Tag: 90 AF 00 00 20 [Encrypted] 00
-    
-    alt Standard NXP Tag (HW 4.2)
-        Tag-->>HAL: [E(Kx, Ti||RndA'||PDcap||PCDcap)] 9100
-        HAL-->>Auth: encrypted_response
-        Auth->>Auth: Parse, verify, derive session keys
-        Auth-->>App: AuthSessionKeys ✅
-    else Seritag Tag (HW 48.0) - CURRENT ISSUE
-        Tag-->>HAL: 91AE (Authentication Error) ❌
-        HAL-->>Auth: AuthenticationError
-        Auth-->>App: Exception ❌
+    alt Standard NXP
+        Tag-->>Card: E(Ti || RndA' || PDCap2) + 9100
+        Card-->>Session: encrypted response
+        Session->>Session: Verify RndA'
+        Session->>Session: Derive session keys
+        Session-->>AuthEV2: AuthSessionKeys
+        AuthEV2->>AuthEV2: Create AuthenticatedConnection
+        AuthEV2-->>App: AuthenticatedConnection ✅
+    else Seritag (diverges)
+        Tag-->>Card: 91AE (Auth Error)
+        Card-->>Session: Error
+        Session-->>App: AuthenticationError ❌
     end
+```
+
+### Session Key Derivation
+
+```python
+# After successful Phase 2
+SV1 = 0xA5 0x5A || 0x00...  # Encryption key seed
+SV2 = 0x5A 0xA5 || 0x00...  # MAC key seed
+
+KSesAuthENC = CMAC(K, SV1 || RndA[0:2] || RndB[0:2] || ...)
+KSesAuthMAC = CMAC(K, SV2 || RndA[0:2] || RndB[0:2] || ...)
+
+# Stored in AuthenticatedConnection
+session_keys = AuthSessionKeys(
+    session_enc_key=KSesAuthENC,
+    session_mac_key=KSesAuthMAC,
+    ti=Ti,  # Transaction Identifier
+    cmd_counter=0  # Increments after each authenticated command
+)
 ```
 
 ---
 
-## Current Status & Findings
+## Provisioning Flow
 
-### ✅ Working Components
-1. **HAL Layer**: PC/SC communication works correctly
-2. **Registry Key**: ✅ EscapeCommandEnable fixed (ACR122U escape mode now works)
-3. **NDEF Operations**: ✅ Read/write works WITHOUT authentication (BREAKTHROUGH)
-4. **Static URL Provisioning**: ✅ Production-ready (working solution)
-5. **Mock HAL**: ✅ Complete and verified to match real hardware exactly (6/12 tests identical)
-6. **Phase 1 Authentication**: ✅ Works correctly (returns encrypted RndB)
-7. **Protocol Implementation**: ✅ All steps verified correct per NXP spec
-3. **NDEF Read/Write**: ✅ Works WITHOUT authentication on Seritag tags!
-4. **File Selection**: ✅ ISOSelectFile works (P1=0x02 for EF selection)
-5. **ISO Commands**: ✅ ISOReadBinary/ISOUpdateBinary work (CLA=00, correct format)
-6. **Command Classes**: APDU command encapsulation complete
-7. **EV2 Phase 1**: AuthenticateEV2First works for both standard and Seritag tags
-8. **Version Detection**: GetChipVersion correctly identifies Seritag (HW 48.0)
-9. **Session Key Derivation**: Key derivation algorithm implemented (not yet usable)
+### Complete Provisioning Example
 
-### ❌ Blocking Issues
-
-#### **BREAKTHROUGH: NDEF Works Without Authentication** ✅
-- **Finding**: ISOReadBinary (00 B0) and ISOUpdateBinary (00 D6) work WITHOUT authentication!
-- **Impact**: Can read/write NDEF without solving EV2 Phase 2!
-- **Status**: ✅ Verified - 6/12 tests passing, file selection working
-- **Next**: Test SUN configuration and real NDEF provisioning
-
-#### **Potential Blocker: SUN Configuration**
-- **Status**: Not yet tested - may still require authentication
-- **Impact**: If SUN requires auth, still need EV2 Phase 2 solution
-- **Next Step**: Test ConfigureSunSettings command without authentication
-
-#### **Secondary Blocker: Command 0x51 Discovery**
-- **Finding**: Command 0x51 returns `91CA` (COMMAND_ABORTED) instead of `911C` (unsupported)
-- **Implication**: Command exists and may enable recovery/reset functionality
-- **Status**: Investigation ongoing - testing parameters and sequences
-- **Requirement**: Need authentication to execute (chicken-egg problem)
-
-### 📊 Test Infrastructure Status
-- **Standard NXP Tags**: Tests working (when hardware available)
-- **Seritag Tags**: ✅ NDEF read/write working without authentication
-- **Mock HAL**: ✅ Complete and verified (`tests/ntag424_sdm_provisioner/mock_hal.py`)
-  - Matches real hardware exactly (6/12 tests identical)
-  - Supports USE_MOCK_HAL environment variable
-  - Enables testing without hardware
-- **Simulator**: `seritag_simulator.py` implements standard EV2 (useful for testing our code, not Seritag behavior)
-
----
-
-## Investigation Strategy
-
-### Phase 1: Reverse Engineer Seritag Phase 2 Protocol ⏳ **IN PROGRESS**
-
-**Goal**: Understand exactly how Seritag modifies the EV2 Phase 2 protocol
-
-**Approach**:
-1. ✅ **Document Analysis**: Review Seritag SVG authentication pages
-   - Location: `investigation_ref/seritag_investigation_reference.md`
-   - Status: Reference document prepared, needs deep analysis
-   
-2. ⏳ **Protocol Variation Testing**: Test all possible Phase 2 modifications
-   - Different RndB rotation (left/right, byte count variations)
-   - Different encryption modes/padding schemes  
-   - Multi-frame responses
-   - Timing delays between Phase 1 and Phase 2
-   - Script: `seritag_phase2_analysis.py`
-   
-3. ⏳ **Error Code Analysis**: Understand exact failure mode
-   - `91AE` = "Current authentication status does not allow the requested command"
-   - May indicate protocol mismatch, not key error
-   - Log exact response bytes for analysis
-
-**Tools**:
-- `examples/seritag/03_authenticate_seritag.py` - Authentication diagnostic
-- `seritag_phase2_analysis.py` - Phase 2 protocol variations
-- `seritag_recovery_attempts.py` - Alternative approaches
-
-**Success Criteria**: 
-- Successfully complete Phase 2 authentication with Seritag tag
-- Obtain session keys and verify authentication state
-
----
-
-### Phase 2: Exploit Command 0x51 🔍 **IN PROGRESS**
-
-**Goal**: Understand and successfully execute command 0x51
-
-**Status Word Analysis**:
-- `91CA` = COMMAND_ABORTED: "Previous Command was not fully completed. Not all Frames were requested or provided by the PCD."
-- **Critical Insight**: May need previous command sequence or multi-frame protocol
-
-**Approach**:
-1. ✅ **Command Discovery**: Confirmed command exists (returns 91CA, not 911C)
-2. ⏳ **Parameter Exploration**: Systematic testing of P1/P2/Lc/Data combinations
-   - Script: `seritag_0x51_exploit.py`
-   - Test immediately after Phase 1 (before Phase 2)
-   - Test as chained/multi-frame command
-   - Test with different key numbers from Phase 1
-3. ⏳ **Sequence Testing**: Try 0x51 as part of command sequences
-   - After Phase 1 only
-   - Between Phase 1 and Phase 2  
-   - As alternative to Phase 2
-4. ⏳ **Documentation Research**: Search Seritag docs for 0x51 reference
-
-**Hypothesis**: 
-- Command 0x51 might be Seritag's "Phase 2 equivalent"
-- Command 0x51 might enable factory reset or protocol switching
-- Command 0x51 might require specific preconditions
-
-**Success Criteria**:
-- Successfully execute 0x51 and receive non-error response
-- If successful, attempt to use 0x51 to reset tag or complete authentication
+```python
+def provision_game_coin(uid: str, new_keys: Dict[int, bytes]):
+    """
+    Provision a game coin with unique keys and SDM enabled.
+    
+    Type-safe authenticated command flow.
+    """
+    
+    with CardManager(reader_index=0) as card:
+        
+        # ================================================================
+        # UNAUTHENTICATED COMMANDS
+        # ================================================================
+        
+        SelectPiccApplication().execute(card)
+        
+        version = GetChipVersion().execute(card)
+        print(f"UID: {version.uid.hex()}")
+        print(f"HW: {version.hw_vendor_id}.{version.hw_type}")
+        
+        # ================================================================
+        # AUTH SESSION 1: Change PICC Master Key (Key 0)
+        # ================================================================
+        
+        with AuthenticateEV2(FACTORY_KEY, key_no=0).execute(card) as auth_conn:
+            # auth_conn is AuthenticatedConnection
+            # All crypto handled automatically in encrypt_and_mac()
+            
+            ChangeKey(
+                key_no=0,
+                new_key=new_keys[0],
+                old_key=FACTORY_KEY,
+                key_version=1
+            ).execute(auth_conn)
+            
+            print("✅ PICC Master Key changed")
+        
+        # Auth session closed, keys wiped for security
+        
+        # ================================================================
+        # AUTH SESSION 2: Configure SDM with new PICC key
+        # ================================================================
+        
+        with AuthenticateEV2(new_keys[0], key_no=0).execute(card) as auth_conn:
+            
+            # Change all application keys (1-4)
+            for key_no in [1, 2, 3, 4]:
+                ChangeKey(
+                    key_no=key_no,
+                    new_key=new_keys[key_no],
+                    old_key=FACTORY_KEY,
+                    key_version=1
+                ).execute(auth_conn)
+                
+                print(f"✅ Key {key_no} changed")
+            
+            # Configure SDM
+            sdm_config = SDMConfiguration(
+                file_no=2,
+                comm_mode=CommMode.FULL,
+                sdm_enabled=True,
+                picc_data_offset=0,
+                mac_input_offset=43,
+                mac_offset=67,
+                # ... more configuration
+            )
+            
+            ChangeFileSettings(config=sdm_config).execute(auth_conn)
+            
+            print("✅ SDM configured")
+            
+            # Store keys in database
+            key_manager.store_keys(uid, new_keys)
+        
+        print("✅ Provisioning complete")
+```
 
 ---
 
-### Phase 3: Alternative Authentication Methods 🔄 **PLANNED**
+## Next Steps
 
-**Goal**: Find alternative paths to authenticate with Seritag tags
+### Immediate - Consolidation (This Week)
+
+**Priority**: Eliminate crypto duplication
+
+1. **Move Crypto to AuthenticatedConnection**
+   - Implement `encrypt_and_mac()` fully
+   - Implement `apply_mac_only()` for MAC mode
+   - Handle IV calculation
+   - Handle CMAC truncation
+   - Handle command counter increment
+
+2. **Refactor ChangeKey**
+   - Remove `DNA_Calc` usage
+   - Call `auth_conn.encrypt_and_mac()`
+   - Keep `_build_key_data()` (data building)
+   - Update tests
+
+3. **Refactor ChangeFileSettings**
+   - Remove manual crypto (lines 44-78)
+   - Call `auth_conn.encrypt_and_mac()`
+   - Simplify to data building only
+
+4. **Delete DNA_Calc**
+   - Move CRC32 to utils if needed elsewhere
+   - Remove duplicate crypto implementations
+   - Clean up imports
+
+5. **Update Tests**
+   - Test `AuthenticatedConnection.encrypt_and_mac()`
+   - Test command execution with mocked auth_conn
+   - Verify real hardware still works
+
+### Short-Term - Seritag Investigation (This Month)
+
+**Status**: Blocked on Phase 2 authentication
 
 **Approaches**:
-1. **EV1 Authentication**: Try legacy EV1 protocol instead of EV2
-   - Different command codes
-   - Different key derivation
-   - May be supported for backward compatibility
-   
-2. **Factory Key Variations**: Test if Seritag uses different factory keys
-   - Standard: All zeros (16 bytes)
-   - Variations: Seritag-branded keys, UID-derived keys
-   - Script: `seritag_recovery_attempts.py`
-   
-3. **Hardware Reset**: Physical/power cycling might reset to factory state
-   - Remove and re-apply tag
-   - Reader power cycle
-   - May clear authentication state
+1. Deep analysis of Seritag documentation
+2. Protocol variation testing (rotation, timing, etc.)
+3. Command 0x51 exploration (returns 91CA)
+4. Alternative authentication methods (EV1, factory keys)
 
-4. **Low-Level APDU Manipulation**: Bypass high-level abstractions
-   - Direct APDU construction
-   - Experiment with unusual command formats
+**Success Criteria**: Complete Phase 2 with Seritag tags
 
-**Success Criteria**: Any method that successfully authenticates with Seritag tag
+### Long-Term - Feature Complete (This Quarter)
+
+1. **SDM/SUN Support**
+   - PICC data encoding
+   - MAC calculation
+   - Server-side verification
+   - URL generation
+
+2. **Key Management**
+   - CSV key storage
+   - UID-based key derivation
+   - Backup/restore functionality
+   - Key rotation
+
+3. **Production Features**
+   - Batch provisioning
+   - Error recovery
+   - Validation tools
+   - Comprehensive docs
 
 ---
 
-### Phase 4: Integration & Testing ✅ **PLANNED**
+## Testing Strategy
 
-**Goal**: Integrate Seritag support into main provisioning workflow
+### Unit Tests (Mock HAL)
 
-**Tasks**:
-1. **Protocol Detection**: Auto-detect Seritag vs. standard NXP (HW version check)
-2. **Authentication Handler**: Create Seritag-specific authentication path
-3. **Error Handling**: Graceful fallback when Seritag authentication fails
-4. **Documentation**: Document Seritag differences and limitations
-5. **Testing**: Validate full SDM provisioning on Seritag tags (once auth works)
+```python
+# Test without hardware
+def test_change_key_crypto():
+    mock_auth_conn = MockAuthenticatedConnection()
+    
+    cmd = ChangeKey(key_no=0, new_key=NEW_KEY, old_key=OLD_KEY)
+    result = cmd.execute(mock_auth_conn)
+    
+    # Verify encrypt_and_mac was called correctly
+    assert mock_auth_conn.encrypt_and_mac_called
+    assert result.success
+```
+
+### Integration Tests (Real Hardware)
+
+```python
+# Test with real NXP tag
+def test_provision_real_tag():
+    with CardManager() as card:
+        with AuthenticateEV2(FACTORY_KEY, 0).execute(card) as auth_conn:
+            result = ChangeKey(0, NEW_KEY, FACTORY_KEY).execute(auth_conn)
+            assert result.success
+```
+
+### Test Coverage Goals
+
+- ✅ Unit tests: 90%+ coverage
+- ✅ Integration tests: Key provisioning flows
+- ⏳ Hardware tests: Both NXP and Seritag tags
+- ⏳ Mock HAL: Matches real hardware exactly
 
 ---
 
 ## Component Details
 
-### Authentication Session (`crypto/auth_session.py`)
-- **Purpose**: Manages EV2 authentication and session key derivation
-- **Current State**: Implements standard NXP EV2 protocol
-- **Modification Needed**: Add Seritag-specific Phase 2 handler
-- **Dependencies**: AES (pycryptodome), CMAC for key derivation
+### Files & Responsibilities
 
-### Command Layer (`commands/sdm_commands.py`)
-- **Purpose**: Encapsulates NTAG424 APDU commands
-- **Current State**: Complete for standard commands
-- **Enhancement**: Add command 0x51 wrapper when protocol understood
+| File | Purpose | Status |
+|------|---------|--------|
+| `commands/base.py` | `ApduCommand`, `AuthApduCommand` base classes | ✅ Complete |
+| `commands/sdm_commands.py` | Command implementations | 🔄 Refactoring |
+| `commands/change_key.py` | Legacy `DNA_Calc` | ❌ To delete |
+| `crypto/auth_session.py` | EV2 auth, key derivation | ✅ Complete |
+| `hal.py` | `CardManager`, `NTag424CardConnection` | ✅ Complete |
+| `constants.py` | Enums, status codes, responses | ✅ Complete |
+| `key_manager.py` | Key storage/retrieval | ✅ Complete |
 
-### Hardware Abstraction Layer (`hal.py`)
-- **Purpose**: PC/SC interface abstraction
-- **Current State**: Working correctly
-- **No Changes Needed**: Hardware communication is functioning
+### Dependencies
 
-### Key Manager (`key_manager.py`)
-- **Purpose**: Derive unique keys per tag using UID
-- **Current State**: Implemented, needs testing
-- **Note**: Requires authentication to change keys (blocked by Phase 2 issue)
+**Required**:
+- Python 3.8+
+- pyscard (PC/SC interface)
+- pycryptodome (AES/CMAC crypto)
+
+**Optional**:
+- pytest (testing)
+- mypy (type checking)
 
 ---
 
-## Risk Assessment & Mitigation
+## Risk Assessment
 
-### High Risk Operations
-1. **FORMAT_PICC**: Will permanently erase tag (one-way operation)
-   - **Mitigation**: Only test with expendable tags, explicit confirmation required
-   
-2. **Key Changes**: Changing keys without backup permanently locks tag
-   - **Mitigation**: Always save keys before changing, test with dummy tags first
-   
-3. **Brute Force**: Too many auth attempts may trigger security delays
-   - **Mitigation**: Add delays between attempts, monitor for rate limiting
-
-### Low Risk Operations
-- Phase 1 authentication attempts (read-only)
-- Command probing (read-only exploration)
+### Low Risk
+- Reading file settings (read-only)
+- Phase 1 authentication (non-destructive)
 - Version detection (read-only)
 
----
+### Medium Risk
+- Phase 2 authentication testing (rate limiting possible)
+- Command exploration (could trigger lockout)
 
-## Next Immediate Steps
+### High Risk
+- Key changes (can permanently lock tag if keys lost)
+- FORMAT_PICC (irreversible erase)
+- File settings changes (could break SDM)
 
-1. **Deep Analysis of Seritag Documentation**
-   - Analyze SVG pages in `investigation_ref/`
-   - Extract exact Phase 2 protocol differences
-   - Document findings in analysis document
-
-2. **Run Phase 2 Variation Tests**
-   - Execute `seritag_phase2_analysis.py` with real hardware
-   - Capture all error codes and responses
-   - Log exact bytes for analysis
-
-3. **Test Command 0x51 Immediately After Phase 1**
-   - Execute `seritag_0x51_exploit.py` 
-   - Focus on multi-frame/chained command patterns
-   - Test with timing variations
-
-4. **Update Constants**
-   - Add missing status words (91CA, etc.) to `constants.py`
-   - Document all observed Seritag-specific behaviors
-
-5. **Create Seritag Authentication Handler**
-   - Once Phase 2 protocol identified, implement handler
-   - Support both standard and Seritag paths
-   - Auto-detect based on hardware version
+**Mitigation**:
+- Always backup keys before changes
+- Use expendable tags for testing
+- Add confirmation prompts for destructive operations
+- Maintain key database with UID mapping
 
 ---
 
 ## Success Metrics
 
-### Short-Term (Investigation Phase)
-- [ ] Identify exact Seritag Phase 2 protocol difference
-- [ ] Successfully complete authentication with Seritag tag
-- [ ] Document command 0x51 behavior and requirements
-- [ ] Create Seritag authentication handler implementation
+### Phase 1: Consolidation (This Week)
+- [x] Type-safe command architecture implemented
+- [ ] All crypto moved to `AuthenticatedConnection`
+- [ ] `DNA_Calc` class removed
+- [ ] All tests passing with new API
+- [ ] Zero crypto code duplication
 
-### Long-Term (Integration Phase)
-- [ ] Full SDM provisioning works on Seritag tags
-- [ ] Automatic protocol detection (no manual configuration)
-- [ ] Comprehensive test coverage for Seritag tags
-- [ ] Recovery tool for locked Seritag tags
-- [ ] Complete documentation of Seritag modifications
+### Phase 2: Seritag Support (This Month)
+- [ ] Phase 2 authentication works with Seritag
+- [ ] Automatic protocol detection (HW version)
+- [ ] Full provisioning on Seritag tags
+- [ ] Command 0x51 behavior documented
 
----
-
-## Dependencies & Prerequisites
-
-### Hardware Requirements
-- ✅ PC/SC compliant NFC reader (ACR122U or equivalent)
-- ✅ Seritag NTAG424 DNA tag (HW 48.0) for testing
-- ✅ Standard NXP NTAG424 DNA tag (HW 4.2) for comparison
-
-### Software Requirements  
-- ✅ Python 3.8+ with venv
-- ✅ pyscard (PC/SC interface)
-- ✅ pycryptodome (AES/CMAC crypto)
-- ✅ Investigation scripts and analysis tools
-
-### Knowledge Requirements
-- ✅ NXP NTAG424 DNA EV2 authentication protocol
-- ✅ AES-128 encryption and CMAC
-- ⏳ Seritag-specific protocol modifications (investigating)
+### Phase 3: Production Ready (This Quarter)
+- [ ] SDM/SUN fully implemented
+- [ ] Batch provisioning working
+- [ ] Key management complete
+- [ ] Comprehensive documentation
+- [ ] 95%+ test coverage
 
 ---
 
-**Last Updated**: Current session - Analysis complete, Phase 2 investigation active  
-**Status**: Investigation phase - Blocked on Seritag Phase 2 protocol  
-**Priority**: HIGH - Blocks SDM provisioning for Seritag tags (common variant)
+**Last Updated**: Current session - Type-safe architecture designed  
+**Status**: Consolidation phase - moving crypto to `AuthenticatedConnection`  
+**Priority**: HIGH - Clean architecture before adding more features

@@ -28,7 +28,7 @@ with CardManager(reader_index=0) as card:
             print("Testing authenticated command (GetKeyVersion)...")
             try:
                 # GetKeyVersion requires CommMode.MAC
-                key_ver = GetKeyVersion(key_no=0).execute(card, session=auth_conn.session)
+                key_ver = GetKeyVersion(key_no=0).execute(auth_conn)
                 print(f"[OK] GetKeyVersion succeeded: {key_ver}")
                 print("[SUCCESS] CMAC truncation fix works!")
             except Exception as e:

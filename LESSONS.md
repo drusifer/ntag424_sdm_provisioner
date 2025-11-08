@@ -862,5 +862,56 @@ mac_truncated = bytes([mac_full[i] for i in range(1, 16, 2)])  # Even indices: [
 
 ---
 
-**Last Updated:** 2025-11-02
+## 2025-11-08: SESSION KEY DERIVATION BUG - CRITICAL FIX
+
+### Issue
+ChangeKey and all authenticated commands failing with 0x911E (INTEGRITY_ERROR).
+Authentication completed successfully (9100) but every subsequent command failed.
+
+### Root Cause
+**SESSION KEY DERIVATION WAS COMPLETELY WRONG!**
+
+We were using simplified 8-byte SV formula:
+```python
+sv1 = b'\xA5\x5A\x00\x01\x00\x80' + rnda[0:2]  # Only 8 bytes!
+cmac_enc.update(sv1 + b'\x00' * 8)  # Pad to 16
+```
+
+**Correct formula per NXP datasheet Section 9.1.7 is 32 bytes with XOR:**
+```python
+sv1 = bytearray(32)
+sv1[0:6] = b'\xA5\x5A\x00\x01\x00\x80'
+sv1[6:8] = rnda[0:2]           # RndA[15..14]
+sv1[8:14] = rndb[0:6]          # RndB[15..10]
+sv1[14:24] = rndb[6:16]        # RndB[9..0]
+sv1[24:32] = rnda[8:16]        # RndA[7..0]
+# XOR: RndA[13..8] with RndB[15..10]
+for i in range(6):
+    sv1[8 + i] ^= rnda[2 + i]
+```
+
+### Solution
+Fixed `_derive_session_keys()` in `auth_session.py` to use full 32-byte SV with XOR operations.
+
+### Verification
+- GetKeyVersion: ✅ 9100 (SUCCESS!)
+- ChangeKey: ✅ 9100 (SUCCESS!)
+- Tested with raw pyscard + crypto_primitives only
+
+### Key Learning
+**NEVER simplify crypto formulas from specs!**
+- The datasheet explicitly shows 32-byte SV structure
+- We "optimized" to 8 bytes + padding
+- This caused ALL authenticated commands to fail
+- Spent days debugging when the issue was in session key derivation
+
+### Files Fixed
+- `src/ntag424_sdm_provisioner/crypto/auth_session.py` - Fixed `_derive_session_keys()`
+- Verified with: `tests/raw_readonly_test_fixed.py`, `tests/raw_changekey_test_fixed.py`
+
+**Status:** ✅ RESOLVED - ChangeKey now works!
+
+---
+
+**Last Updated:** 2025-11-08
 

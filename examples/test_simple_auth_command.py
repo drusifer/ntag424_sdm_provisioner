@@ -46,7 +46,7 @@ with CardManager(reader_index=0) as card:
             # GetFileSettings has continuation frames that use CMAC
             # This will test if our new CMAC format works
             print("  Sending GetFileSettings (will use CMAC on continuation frames)...")
-            settings = GetFileSettings(file_no=0x02).execute(card, session=auth_conn.session)
+            settings = GetFileSettings(file_no=0x02).execute(auth_conn)
             print(f"  [OK] {settings}")
             print(f"  [SUCCESS] CMAC format works for authenticated commands!")
     except Exception as e:

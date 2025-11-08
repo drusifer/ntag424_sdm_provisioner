@@ -136,6 +136,35 @@ class NTag424CardConnection:
         if sw != expected:
             raise NTag242NoReadersError(error_message, sw1, sw2)
         
+    def send(self, command):
+        """
+        Send a command to the card (NEW PATTERN).
+        
+        This is the preferred way to send commands:
+            response = connection.send(GetVersion())
+        
+        Args:
+            command: ApduCommand to send
+            
+        Returns:
+            Command-specific response (parsed by command.parse_response())
+        """
+        # Build APDU from command
+        apdu = command.build_apdu()
+        
+        # Send and get raw response
+        data, sw1, sw2 = self.send_apdu(apdu, use_escape=command.use_escape)
+        
+        # Handle multi-frame responses (SW_ADDITIONAL_FRAME = 0x91AF)
+        full_response = bytearray(data)
+        while sw1 == 0x91 and sw2 == 0xAF:
+            # Send GET_ADDITIONAL_FRAME (0x90AF0000)
+            more_data, sw1, sw2 = self.send_apdu([0x90, 0xAF, 0x00, 0x00, 0x00])
+            full_response.extend(more_data)
+        
+        # Let command parse the response
+        return command.parse_response(bytes(full_response), sw1, sw2)
+    
     def send_apdu(self, apdu: List[int], use_escape: bool = False) -> Tuple[List[int], int, int]:
         """
         Sends a raw APDU command to the card and returns the response.

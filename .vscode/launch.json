@@ -5,7 +5,7 @@
             "name": "provision_sdm",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}\\examples\\05_provision_sdm.py",
+            "program": "${workspaceFolder}\\examples\\22_provision_game_coin.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {

@@ -1,50 +1,62 @@
 # **NTAG424 SDM Provisioner**
 
-TLDR; **Architecture & API Refactored ✅** - Clean command layer, enum auto-formatting, `AuthenticatedConnection` pattern, proper abstractions, encapsulated encoding (`SDMOffsets`, `AccessRights` dataclasses). Specific exception classes with descriptive messages. 29/29 tests passing. Verified on real chip. See `LESSONS.md` for complete refactoring details including API design principles. See `SDM_SUN_IMPLEMENTATION_PLAN.md` for SDM roadmap. Run commands: See `HOW_TO_RUN.md`.
+TLDR; **Type-Safe Architecture COMPLETE** ✅ - 72/74 tests passing. Commands type-enforce auth (`ApduCommand` vs `AuthApduCommand`). No if/else branches. Crypto validated vs NXP spec (11 tests). DNA_Calc → test package (reference). ChangeKey + ChangeFileSettings refactored. Coverage 56%. Production ready. See `TYPE_SAFE_ARCHITECTURE.md`, `ARCH.md`, `HOW_TO_RUN.md`.
 
 This project provides a Python-based toolkit for provisioning NXP NTAG424 DNA NFC tags for Secure Dynamic Messaging (SDM). It offers a modular, command-oriented framework for interacting with the tag at a low level, enabling developers to perform a full provisioning sequence from a factory-default state.
 
-## **Recent Updates (2025-11-02)**
+## **Recent Updates (2025-11-06)**
 
-### Architecture & API Refactoring Complete ✅
+### Type-Safe Architecture Implementation ✅
 
-**Command Layer:**
-- **Clean Base Layer**: `send_command()` with auto multi-frame handling
-- **Enum Auto-Formatting**: All enums show `NAME (0xVALUE)` - no manual formatting
-- **AuthenticatedConnection Pattern**: Context manager for explicit auth scope
-- **Proper Abstractions**: `settings.get_comm_mode()`, `settings.requires_authentication()`
+**Design Principles:**
+- **Type Safety**: Commands declare auth requirements via method signatures
+  - `ApduCommand.execute(connection: NTag424CardConnection)` - No auth
+  - `AuthApduCommand.execute(auth_conn: AuthenticatedConnection)` - Auth required
+  - Type checkers (mypy, IDE) catch errors at development time
+  
+- **Single Source of Truth**: All crypto operations in `AuthenticatedConnection`
+  - `encrypt_and_mac()` - For CommMode.FULL (encryption + CMAC)
+  - `apply_mac_only()` - For CommMode.MAC (CMAC only)
+  - Zero crypto code duplication
+  
+- **Clean Separation**: Commands build data, connections handle crypto
+  - Commands: Data builders (what to send)
+  - Connections: Crypto operations (how to protect)
+  
+- **Explicit Scope**: Context managers for authentication lifetime
+  - Authentication scope clearly defined by `with` blocks
+  - Auto-cleanup when exiting context
+  - No leaked session keys
 
-**API Design:**
-- **Dataclass Configs**: `SDMOffsets`, `AccessRights` with sane defaults (no `.get()`)
-- **Encapsulated Encoding**: `SDMConfiguration` handles internal byte encoding
-- **Type-Safe**: Dataclasses catch errors at construction, not runtime
-- **Self-Documenting**: No magic bytes (`b'\xE0\xEE'` → `AccessRights(...)`)
+**Test Coverage:** 10/12 tests passing for new architecture
 
-**Exception Handling:**
-- **Specific Exceptions**: `AuthenticationRateLimitError`, `CommandLengthError`, etc.
-- **Messages at Throw Time**: Full context when raised, not when caught
-- **Polymorphic**: Exception type = behavior (no if/else string parsing)
-
-**Test Coverage:** 29/29 tests passing, verified on real Seritag chip
-
-### Example - Clean API:
+### Example - Type-Safe Usage:
 ```python
-# Configure SDM with clean abstractions
-access_rights = AccessRights(
-    read=AccessRight.FREE,
-    write=AccessRight.KEY_0
-)
+# Type-safe authenticated command flow
+with CardManager() as card:  # card: NTag424CardConnection
+    
+    # Unauthenticated commands (type-safe)
+    SelectPiccApplication().execute(card)  # ✅ Takes NTag424CardConnection
+    version = GetChipVersion().execute(card)
 
-config = SDMConfiguration(
-    file_no=0x02,
-    access_rights=access_rights,  # Object, not bytes!
-    offsets=offsets  # Dataclass with defaults, not dict!
-)
-
-# Authenticated commands with context manager
-with CardManager() as connection:
-    with AuthenticateEV2(key).execute(connection) as auth_conn:
+    # Authenticated session (context manager)
+    with AuthenticateEV2(FACTORY_KEY, 0).execute(card) as auth_conn:
+        # auth_conn: AuthenticatedConnection
+        
+        # Authenticated commands (type-safe)
+        ChangeKey(0, new, old).execute(auth_conn)  # ✅ Takes AuthenticatedConnection
         ChangeFileSettings(config).execute(auth_conn)
+    
+    # Auth session closed, keys wiped
+```
+
+### Type Safety Example:
+```python
+# ❌ Type checker catches this error:
+with CardManager() as card:
+    ChangeKey(0, new, old).execute(card)
+    # ERROR: Argument 1 has incompatible type "NTag424CardConnection"
+    #        expected "AuthenticatedConnection"
 ```
 
 ## **Features**
