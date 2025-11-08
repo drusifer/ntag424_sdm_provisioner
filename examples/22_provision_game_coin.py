@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.join(project_root, 'src'))
 from ntag424_sdm_provisioner.hal import CardManager
 from ntag424_sdm_provisioner.csv_key_manager import CsvKeyManager, TagKeys
 from ntag424_sdm_provisioner.constants import GAME_COIN_BASE_URL
+from ntag424_sdm_provisioner.uid_utils import format_uid_with_asset_tag, uid_to_asset_tag
 from ntag424_sdm_provisioner.commands.sdm_commands import (
     SelectPiccApplication,
     GetChipVersion,
@@ -81,13 +82,13 @@ def check_tag_state_and_prepare(card, uid: bytes, key_mgr: CsvKeyManager, new_ur
                 log.info("Reading tag (simulating phone tap)...")
                 tap_url = None
                 try:
-                    from ntag424_sdm_provisioner.commands.read_data import ReadData
+                    from ntag424_sdm_provisioner.commands.iso_commands import ISOReadBinary
                     
                     # Select NDEF file
                     ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
                     
-                    # Read NDEF (start with reasonable size)
-                    ndef_data = ReadData(file_no=0x04, offset=0, length=200).execute(card)
+                    # Read NDEF using ISO command (matching how we write)
+                    ndef_data = ISOReadBinary(offset=0, length=200).execute(card)
                     
                     # Extract URL from NDEF (skip TLV header, find URL)
                     # NDEF format: 0x03 <len> 0xD1 0x01 <len> 0x55 <url_code> <url_bytes> 0xFE
@@ -197,7 +198,9 @@ def provision_game_coin():
             
             version_info = GetChipVersion().execute(card)
             uid = version_info.uid
-            log.info(f"  Chip UID: {uid.hex().upper()}")
+            asset_tag = uid_to_asset_tag(uid)
+            log.info(f"  Chip UID: {format_uid_with_asset_tag(uid)}")
+            log.info(f"  Asset Tag: {asset_tag} (write this on physical label)")
             log.info(f"  Chip Info: {version_info}")
             log.info("")
             
@@ -384,13 +387,13 @@ def provision_game_coin():
             log.info("  Reading NDEF unauthenticated (like a phone would)...")
             
             try:
-                from ntag424_sdm_provisioner.commands.read_data import ReadData
+                from ntag424_sdm_provisioner.commands.iso_commands import ISOReadBinary
                 
                 # Select NDEF file
                 ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
                 
-                # Read NDEF
-                ndef_data = ReadData(file_no=0x04, offset=0, length=200).execute(card)
+                # Read NDEF using ISO command (matching how we wrote it)
+                ndef_data = ISOReadBinary(offset=0, length=200).execute(card)
                 
                 # Extract URL
                 url_bytes = bytes(ndef_data)
@@ -427,7 +430,8 @@ def provision_game_coin():
             log.info("")
             log.info("SUCCESS! Your game coin has been provisioned.")
             log.info("")
-            log.info(f"Tag UID: {uid.hex().upper()}")
+            log.info(f"Tag UID: {format_uid_with_asset_tag(uid)}")
+            log.info(f"Asset Tag: {asset_tag} <- Write this on your coin label")
             log.info(f"Keys saved to: tag_keys.csv")
             log.info("")
             log.info("When tapped, the coin will generate:")

@@ -99,11 +99,20 @@ All subsequent commands fail with 91AE.
   - "failed" = previous provision failed → keys still factory → skip reset
   - "pending" = keys partially changed → offer reset
 
-### Ready For: ✅ FINAL TESTING
-When tags recover, run:
-```
-python examples/22_provision_game_coin.py
-```
+### Iteration 7: MAJOR SUCCESS! ✅
+- **Tag**: 046E6B4A2F7080 - FULLY PROVISIONED!
+- **Results**:
+  - ✅ Session 1: Key 0 changed (SW=9100)
+  - ✅ Session 2: Re-auth with NEW Key 0 (SW=9100)
+  - ✅ Key 1 changed (SW=9100)
+  - ✅ Key 3 changed (SW=9100)
+  - ✅ NDEF written in 4 chunks (all SW=9000)
+  - ✅ Status saved: "provisioned"
+- **Fix Applied**: 8-byte CMAC responses handled correctly
+- **Issue Found**: ReadData (DESFire) doesn't work for ISO-written NDEF
+- **Fix Applied**: Changed to ISOReadBinary for URL verification
 
-Expected: Complete end-to-end success
+### Iteration 8: Verify URL Read
+- **Need**: Test ISOReadBinary on tag 046E6B4A2F7080 (the successfully provisioned one)
+- **Goal**: Confirm phone will see the URL when tapped
 

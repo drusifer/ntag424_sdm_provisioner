@@ -92,3 +92,56 @@ class ISOSelectFile(ApduCommand):
         except ValueError:
             return SuccessResponse(f"File 0x{self.file_id:04X} selected")
 
+
+class ISOReadBinary(ApduCommand):
+    """
+    ISO 7816-4 READ BINARY command.
+    
+    Reads binary data from the currently selected Elementary File.
+    Must call ISOSelectFile first to select the target file.
+    """
+    
+    def __init__(self, offset: int, length: int, use_escape: bool = True):
+        """
+        Args:
+            offset: Starting offset in the file (0-based)
+            length: Number of bytes to read (max 256)
+            use_escape: Whether to use escape command (default True for ACR122U)
+        """
+        super().__init__(use_escape)
+        self.offset = offset
+        self.length = length
+    
+    def __str__(self) -> str:
+        return f"ISOReadBinary(offset={self.offset}, length={self.length})"
+    
+    def execute(self, connection: NTag424CardConnection) -> bytes:
+        """
+        Execute ISO READ BINARY command.
+        
+        Args:
+            connection: Card connection
+        
+        Returns:
+            bytes: Data read from file
+        
+        Raises:
+            ApduError: If read fails
+        """
+        # Build APDU: CLA INS P1 P2 Le
+        # CLA=0x00 (ISO7816), INS=0xB0 (READ_BINARY)
+        # P1=offset_high (0x00 for offsets < 32768)
+        # P2=offset_low
+        # Le=expected length (0x00 means 256 bytes)
+        
+        apdu = [
+            0x00,  # CLA: ISO7816
+            0xB0,  # INS: READ_BINARY
+            (self.offset >> 8) & 0xFF,  # P1: Offset high byte
+            self.offset & 0xFF,          # P2: Offset low byte
+            self.length if self.length <= 255 else 0  # Le: Expected length (0=256)
+        ]
+        
+        data, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
+        
+        return bytes(data)

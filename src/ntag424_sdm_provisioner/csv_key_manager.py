@@ -40,6 +40,24 @@ class TagKeys:
         """Get SDM MAC key as bytes."""
         return bytes.fromhex(self.sdm_mac_key)
     
+    def get_asset_tag(self) -> str:
+        """Get short asset tag code from UID."""
+        from ntag424_sdm_provisioner.uid_utils import uid_to_asset_tag
+        return uid_to_asset_tag(bytes.fromhex(self.uid))
+    
+    def __str__(self) -> str:
+        """Format TagKeys for display."""
+        from ntag424_sdm_provisioner.uid_utils import uid_to_asset_tag
+        asset_tag = uid_to_asset_tag(bytes.fromhex(self.uid))
+        return (
+            f"TagKeys(\n"
+            f"  UID: {self.uid} [Tag: {asset_tag}]\n"
+            f"  Status: {self.status}\n"
+            f"  Provisioned: {self.provisioned_date}\n"
+            f"  Notes: {self.notes[:50]}{'...' if len(self.notes) > 50 else ''}\n"
+            f")"
+        )
+    
     @staticmethod
     def from_factory_keys(uid: str) -> 'TagKeys':
         """Create TagKeys entry with factory default keys."""

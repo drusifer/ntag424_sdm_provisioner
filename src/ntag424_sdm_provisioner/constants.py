@@ -592,9 +592,11 @@ class Ntag424VersionInfo:
     fab_year: int
     
     def __str__(self) -> str:
+        from ntag424_sdm_provisioner.uid_utils import uid_to_asset_tag
+        asset_tag = uid_to_asset_tag(self.uid)
         return (
             f"Ntag424VersionInfo(\n"
-            f"  UID: {self.uid.hex().upper()},\n"
+            f"  UID: {self.uid.hex().upper()} [Tag: {asset_tag}],\n"
             f"  Hardware: {self.hw_major_version}.{self.hw_minor_version} ({self.hw_storage_size}B),\n"
             f"  Software: {self.sw_major_version}.{self.sw_minor_version} ({self.sw_storage_size}B),\n"
             f"  Batch: {self.batch_no.hex().upper()},\n"
@@ -603,6 +605,7 @@ class Ntag424VersionInfo:
             f"\n"
             f"CHIP INFORMATION:\n"
             f"  UID: {self.uid.hex().upper()}\n"
+            f"  Asset Tag: {asset_tag} <- Write on label\n"
             f"  Hardware Protocol: {self.hw_protocol}\n"
             f"  Software Protocol: {self.sw_protocol}\n"
             f"  Hardware Type: {self.hw_type}\n"

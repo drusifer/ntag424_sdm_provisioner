@@ -23,6 +23,16 @@ except ImportError:
 def hexb(data: Union[bytes, List[int]]) -> str:
     return toHexString(data)
 
+def format_status_word(sw1: int, sw2: int) -> str:
+    """Format status word with enum name for readability."""
+    sw_value = (sw1 << 8) | sw2
+    try:
+        sw_enum = StatusWord(sw_value)
+        return f"{sw_enum.name} (0x{sw1:02X}{sw2:02X})"
+    except ValueError:
+        # Not a known status word
+        return f"0x{sw1:02X}{sw2:02X}"
+
 log = logging.getLogger("hal")
 
 class NTag242ConnectionError(Exception):
@@ -254,7 +264,7 @@ class NTag424CardConnection:
                 
                 # Manually parse the raw response
                 data, sw1, sw2 = resp[:-2], resp[-2], resp[-1]
-                log.debug(f"  << R-APDU (Control): {toHexString(data)} [{sw1:02X}{sw2:02X}]")
+                log.debug(f"  << R-APDU (Control): {toHexString(data)} [{format_status_word(sw1, sw2)}]")
                 return list(data), sw1, sw2
             except Exception as e:
                 log.error(f"Error during control() command: {e}")
@@ -263,7 +273,7 @@ class NTag424CardConnection:
         else:
             # Use the standard transmit() for compliant readers
             data, sw1, sw2 = self.connection.transmit(apdu)
-            log.debug(f"  << R-APDU (Transmit): {hexb(data)} [{sw1:02X}{sw2:02X}]")
+            log.debug(f"  << R-APDU (Transmit): {hexb(data)} [{format_status_word(sw1, sw2)}]")
             return data, sw1, sw2
 
 from typing import Optional, Iterator
