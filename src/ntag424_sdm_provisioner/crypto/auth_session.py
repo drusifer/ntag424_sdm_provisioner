@@ -185,7 +185,7 @@ class Ntag424AuthSession:
             Encrypted 32-byte response
         """
         plaintext = rnda + rndb_rotated
-        # Use CBC mode with zero IV for authentication (per NTAG424 DNA spec Section 9.1.4)
+        # Use CBC mode with zero IV for authentication (per Arduino line 80)
         # No padding is applied during authentication
         iv = b'\x00' * 16
         cipher = AES.new(self.key, AES.MODE_CBC, iv=iv)
@@ -240,9 +240,11 @@ class Ntag424AuthSession:
         """
         Derive session encryption and MAC keys from RndA, RndB, and Ti.
         
-        Uses NTAG424 DNA key derivation as per NXP spec:
-        - SV1 = 0xA5 5A 00 01 00 80 || RndA[0:2]
-        - SV2 = 0x5A A5 00 01 00 80 || RndA[0:2]
+        Uses NTAG424 DNA key derivation per NXP datasheet Section 9.1.7:
+        SV1 = A5||5A||00||01||00||80||RndA[15..14]||(RndA[13..8] XOR RndB[15..10])||RndB[9..0]||RndA[7..0]
+        SV2 = 5A||A5||00||01||00||80||RndA[15..14]||(RndA[13..8] XOR RndB[15..10])||RndB[9..0]||RndA[7..0]
+        
+        THIS IS 32 BYTES, NOT 8!
         
         Args:
             rnda: Random A (16 bytes)
@@ -252,16 +254,35 @@ class Ntag424AuthSession:
         Returns:
             AuthSessionKeys dataclass with derived keys
         """
-        # Session Encryption Key derivation
-        sv1 = b'\xA5\x5A\x00\x01\x00\x80' + rnda[0:2]
+        # Build 32-byte SV1 per datasheet Section 9.1.7
+        sv1 = bytearray(32)
+        sv1[0] = 0xA5
+        sv1[1] = 0x5A
+        sv1[2:6] = b'\x00\x01\x00\x80'
+        sv1[6:8] = rnda[0:2]           # RndA[15..14] (first 2 bytes)
+        sv1[8:14] = rndb[0:6]          # RndB[15..10] (first 6 bytes)  
+        sv1[14:24] = rndb[6:16]        # RndB[9..0] (last 10 bytes)
+        sv1[24:32] = rnda[8:16]        # RndA[7..0] (last 8 bytes)
+        
+        # XOR: RndA[13..8] with RndB[15..10] per datasheet
+        for i in range(6):
+            sv1[8 + i] ^= rnda[2 + i]
+        
+        # Build 32-byte SV2 (same structure, different label)
+        sv2 = bytearray(sv1)
+        sv2[0] = 0x5A
+        sv2[1] = 0xA5
+        
+        log.debug(f"SV1 (32 bytes): {bytes(sv1).hex()}")
+        log.debug(f"SV2 (32 bytes): {bytes(sv2).hex()}")
+        
+        # Calculate session keys using CMAC over full 32-byte SV
         cmac_enc = CMAC.new(self.key, ciphermod=AES)
-        cmac_enc.update(sv1 + b'\x00' * 8)
+        cmac_enc.update(bytes(sv1))
         session_enc_key = cmac_enc.digest()
         
-        # Session MAC Key derivation
-        sv2 = b'\x5A\xA5\x00\x01\x00\x80' + rnda[0:2]
         cmac_mac = CMAC.new(self.key, ciphermod=AES)
-        cmac_mac.update(sv2 + b'\x00' * 8)
+        cmac_mac.update(bytes(sv2))
         session_mac_key = cmac_mac.digest()
         
         log.debug(f"Session ENC key: {session_enc_key.hex()}")
