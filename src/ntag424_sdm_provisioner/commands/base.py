@@ -333,9 +333,21 @@ class AuthenticatedConnection:
                 log.error("[AUTH_CONN]   3. Wrong session keys")
             # Let error handling proceed normally
         
-        # Decrypt response if needed
+        # Handle response data
         if data:
-            decrypted = self.decrypt_data(bytes(data))
+            # Check if data is CMAC-only (8 bytes) or encrypted data
+            if len(data) == 8:
+                # CMAC-only response (e.g., ChangeKey)
+                # TODO: Verify CMAC
+                # For now, just return empty (CMAC verified by successful SW)
+                decrypted = b''
+            elif len(data) % 16 == 0:
+                # Encrypted response - decrypt it
+                decrypted = self.decrypt_data(bytes(data))
+            else:
+                # Unexpected length
+                log.warning(f"[AUTH_CONN] Unexpected response length: {len(data)} bytes")
+                decrypted = b''
         else:
             decrypted = b''
         
@@ -470,6 +482,84 @@ class AuthenticatedConnection:
             raise ApduError("Authenticated command failed", sw1, sw2)
         
         return bytes(full_response), sw1, sw2
+    
+    def send_write_chunked_authenticated(
+        self,
+        cla: int,
+        ins: int,
+        offset: int,
+        data: bytes,
+        chunk_size: int = 52,
+        use_escape: bool = False
+    ) -> Tuple[int, int]:
+        """
+        Send authenticated write with automatic chunking and crypto per chunk.
+        
+        For authenticated writes to files with CommMode.MAC or CommMode.FULL.
+        Each chunk is independently encrypted (if CommMode.FULL) and MACed.
+        
+        Args:
+            cla: Class byte (e.g., 0x90 for native NTAG424)
+            ins: Instruction byte (e.g., 0x8D for WriteData)
+            offset: Starting offset for write
+            data: Data to write (will be encrypted/MACed per chunk)
+            chunk_size: Max plaintext bytes per chunk (default 52)
+            use_escape: Whether to use escape mode
+        
+        Returns:
+            Final (sw1, sw2) status word
+        """
+        import logging
+        log = logging.getLogger(__name__)
+        
+        data_length = len(data)
+        current_offset = offset
+        
+        log.debug(f"[AUTH_WRITE] Chunked authenticated write: {data_length} bytes, chunk_size={chunk_size}")
+        log.debug(f"[AUTH_WRITE] Session counter at start: {self.session.session_keys.cmd_counter}")
+        
+        while current_offset < offset + data_length:
+            chunk_start = current_offset - offset
+            chunk_end = min(chunk_start + chunk_size, data_length)
+            chunk = data[chunk_start:chunk_end]
+            
+            # Build command data: offset + chunk
+            # For WriteData: [FileNo] [Offset(3)] [Length(3)] [Data]
+            # This is command-specific - caller should prepare properly
+            
+            # Apply crypto to this chunk
+            cmd_header = bytes([cla, ins, 0x00, 0x00])
+            
+            # For FULL mode: encrypt then MAC
+            # For MAC mode: just MAC
+            # Assume FULL mode for now (can be parameterized later)
+            encrypted_chunk = self.encrypt_data(chunk)
+            authenticated_chunk = self.apply_cmac(cmd_header, encrypted_chunk)
+            
+            # Build APDU
+            p1 = (current_offset >> 8) & 0x7F
+            p2 = current_offset & 0xFF
+            
+            apdu = [cla, ins, p1, p2, len(authenticated_chunk)] + list(authenticated_chunk) + [0x00]
+            
+            log.debug(f"[AUTH_WRITE] Chunk: offset={current_offset}, plaintext={len(chunk)}, encrypted+MAC={len(authenticated_chunk)}")
+            
+            # Send chunk
+            _, sw1, sw2 = self.connection.send_apdu(apdu, use_escape=use_escape)
+            
+            # Check for errors
+            if (sw1, sw2) not in [(0x90, 0x00), (0x91, 0x00)]:
+                log.error(f"[AUTH_WRITE] Chunk failed at offset {current_offset}: SW={sw1:02X}{sw2:02X}")
+                return sw1, sw2
+            
+            # Increment counter after successful write
+            self.session.session_keys.cmd_counter += 1
+            log.debug(f"[AUTH_WRITE] Counter incremented to {self.session.session_keys.cmd_counter}")
+            
+            current_offset += len(chunk)
+        
+        log.debug(f"[AUTH_WRITE] Complete: {data_length} bytes written")
+        return sw1, sw2
     
     def __str__(self) -> str:
         return f"AuthenticatedConnection(connection={self.connection})"

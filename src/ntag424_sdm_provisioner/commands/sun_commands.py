@@ -34,32 +34,26 @@ class WriteNdefMessage(ApduCommand):
         return f"WriteNdefMessage(length={len(self.ndef_data)} bytes)"
     
     def execute(self, connection: 'NTag424CardConnection') -> SuccessResponse:
-        """Write NDEF message to the tag."""
+        """Write NDEF message to the tag using low-level chunked write."""
         
-        # NDEF file is file number 2
-        file_no = 0x02
-        
-        # Build APDU: 00 D6 <offset_high> <offset_low> <length> <data>
-        # ISOUpdateBinary uses CLA=00 (ISO 7816-4 standard), not CLA=90
-        offset = 0
         data_length = len(self.ndef_data)
         
-        # P1[7]=0: P1-P2 encodes 15-bit offset
-        # For offset 0: P1=0x00, P2=0x00
-        p1 = (offset >> 8) & 0x7F  # Bit 7 must be 0 for offset mode
-        p2 = offset & 0xFF
+        log.debug(f"WriteNdefMessage: Writing {data_length} bytes")
         
-        apdu = [
-            0x00, 0xD6,  # ISOUpdateBinary (CLA=00 for ISO standard)
-            p1,          # P1 = Offset high bits (bit 7=0)
-            p2,          # P2 = Offset low bits
-            data_length, # Lc = Data length
-        ] + list(self.ndef_data)  # Data (no Le for write commands)
+        # Use HAL's chunked write for automatic chunking
+        sw1, sw2 = connection.send_write_chunked(
+            cla=0x00,           # ISO standard
+            ins=0xD6,           # UpdateBinary
+            offset=0,           # Start at beginning
+            data=self.ndef_data,
+            chunk_size=52,      # Safe default for most readers
+            use_escape=self.use_escape
+        )
         
-        log.debug(f"WriteNdefMessage APDU: {hexb(apdu)}")
-        
-        # Send command
-        _, sw1, sw2 = self.send_command(connection, apdu, allow_alternative_ok=False)
+        # Check final status
+        if (sw1, sw2) not in [(0x90, 0x00), (0x91, 0x00)]:
+            from ntag424_sdm_provisioner.commands.base import ApduError
+            raise ApduError(self.__class__.__name__, sw1, sw2, "Write failed")
         
         return SuccessResponse(f"NDEF message written ({data_length} bytes)")
 

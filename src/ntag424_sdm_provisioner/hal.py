@@ -165,6 +165,64 @@ class NTag424CardConnection:
         # Let command parse the response
         return command.parse_response(bytes(full_response), sw1, sw2)
     
+    def send_write_chunked(
+        self, 
+        cla: int, 
+        ins: int, 
+        offset: int, 
+        data: bytes, 
+        chunk_size: int = 52,
+        use_escape: bool = False
+    ) -> Tuple[int, int]:
+        """
+        Send write command with automatic chunking for large data.
+        
+        For ISO UpdateBinary (0xD6) or similar write commands that use offset addressing.
+        Splits large writes into multiple chunks to respect reader limits.
+        
+        This handles UNAUTHENTICATED writes. For authenticated writes, use
+        AuthenticatedConnection which would apply crypto to each chunk.
+        
+        Args:
+            cla: Class byte (e.g., 0x00 for ISO)
+            ins: Instruction byte (e.g., 0xD6 for UpdateBinary)
+            offset: Starting offset for write
+            data: Data to write
+            chunk_size: Max bytes per chunk (default 52 for most readers)
+            use_escape: Whether to use escape mode
+        
+        Returns:
+            Final (sw1, sw2) status word
+        """
+        data_length = len(data)
+        current_offset = offset
+        
+        log.debug(f"  >> Chunked write: {data_length} bytes, chunk_size={chunk_size}")
+        
+        while current_offset < offset + data_length:
+            chunk_start = current_offset - offset
+            chunk_end = min(chunk_start + chunk_size, data_length)
+            chunk = data[chunk_start:chunk_end]
+            
+            # P1[7]=0: P1-P2 encodes 15-bit offset
+            p1 = (current_offset >> 8) & 0x7F
+            p2 = current_offset & 0xFF
+            
+            apdu = [cla, ins, p1, p2, len(chunk)] + list(chunk)
+            
+            log.debug(f"  >> Chunk: offset={current_offset}, size={len(chunk)}")
+            _, sw1, sw2 = self.send_apdu(apdu, use_escape=use_escape)
+            
+            # Check for errors
+            if (sw1, sw2) not in [(0x90, 0x00), (0x91, 0x00)]:
+                log.error(f"  << Write chunk failed at offset {current_offset}: SW={sw1:02X}{sw2:02X}")
+                return sw1, sw2
+            
+            current_offset += len(chunk)
+        
+        log.debug(f"  >> Chunked write complete: {data_length} bytes written")
+        return sw1, sw2  # Return final status
+    
     def send_apdu(self, apdu: List[int], use_escape: bool = False) -> Tuple[List[int], int, int]:
         """
         Sends a raw APDU command to the card and returns the response.

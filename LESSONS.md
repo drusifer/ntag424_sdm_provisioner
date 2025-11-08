@@ -913,5 +913,82 @@ Fixed `_derive_session_keys()` in `auth_session.py` to use full 32-byte SV with 
 
 ---
 
+---
+
+## 2025-11-08: KEY 0 SESSION INVALIDATION - CRITICAL DISCOVERY
+
+### Issue
+When provisioning (changing keys 0, 1, 3 in sequence), Key 1 and Key 3 changes fail with 0x91AE (AUTHENTICATION_ERROR) even though Key 0 succeeds.
+
+### Root Cause
+**Changing Key 0 (PICC Master Key) INVALIDATES the current authenticated session!**
+
+The session was authenticated using the OLD Key 0. After Key 0 is changed to a new value, the tag considers the session invalid because it was established with a key that no longer exists.
+
+### Evidence
+```
+Session 1: Auth with OLD Key 0
+  - Change Key 0 → SW=9100 ✓
+  [SESSION NOW INVALID]
+  - Change Key 1 → SW=91AE ✗ (Session invalid!)
+  - Change Key 3 → SW=91AE ✗ (Session invalid!)
+```
+
+Instrumentation clearly showed:
+```
+CRITICAL: KEY 0 (PICC MASTER KEY) WAS CHANGED!
+CRITICAL: Current session is NOW INVALID
+CRITICAL: All subsequent commands will fail with 91AE
+CRITICAL: Must re-authenticate with NEW Key 0 to continue
+```
+
+### Solution: Two-Session Provisioning Flow
+
+**INCORRECT (one session):**
+```python
+with AuthenticateEV2(old_key, key_no=0).execute(card) as auth_conn:
+    auth_conn.send(ChangeKey(0, new_key, old_key))  # ✓
+    auth_conn.send(ChangeKey(1, new_key1, old_key1))  # ✗ 91AE
+    auth_conn.send(ChangeKey(3, new_key3, old_key3))  # ✗ 91AE
+```
+
+**CORRECT (two sessions):**
+```python
+# Session 1: Change Key 0 only
+with AuthenticateEV2(old_key, key_no=0).execute(card) as auth_conn:
+    auth_conn.send(ChangeKey(0, new_key, old_key))  # ✓
+# Session ends - now invalid
+
+# Session 2: Change other keys with NEW Key 0
+with AuthenticateEV2(new_key, key_no=0).execute(card) as auth_conn:
+    auth_conn.send(ChangeKey(1, new_key1, old_key1))  # ✓
+    auth_conn.send(ChangeKey(3, new_key3, old_key3))  # ✓
+    # Can do SDM config and NDEF write in same session
+```
+
+### Implementation
+Updated `examples/22_provision_game_coin.py`:
+- Split provisioning into two explicit sessions
+- Re-authenticate with NEW Key 0 before changing other keys
+- Added trace blocks to show session boundaries
+- Added CRITICAL log messages when Key 0 is detected
+
+### Rate Limiting Consideration
+Two sessions means two authentications, which could trigger rate-limiting faster. However:
+- It's the ONLY way to change all keys
+- Alternative is to change Key 0, then manually reset and provision Key 1/3 later
+- With proper error handling, two sessions is acceptable
+
+### Key Learning
+**Key 0 is special** - changing it invalidates the current session because the session itself was authenticated using that key. This is by design for security.
+
+### Files Updated
+- `examples/22_provision_game_coin.py` - Two-session provisioning flow
+- `src/ntag424_sdm_provisioner/commands/base.py` - Added Key 0 change detection and CRITICAL warnings
+
+**Status:** ✅ RESOLVED - Provisioning flow now correct
+
+---
+
 **Last Updated:** 2025-11-08
 

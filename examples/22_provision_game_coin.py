@@ -72,14 +72,49 @@ def check_tag_state_and_prepare(card, uid: bytes, key_mgr: CsvKeyManager, new_ur
             
             # Healthy provisioned tag - compare URLs
             if current_keys.status == "provisioned":
-                current_url = current_keys.notes if current_keys.notes else "(no URL)"
                 log.info("")
                 log.info("Tag Status: PROVISIONED (healthy)")
-                log.info(f"  Current URL: {current_url}")
-                log.info(f"  New URL:     {new_url}")
+                log.info(f"  Provisioned: {current_keys.provisioned_date}")
                 
-                if current_url == new_url:
-                    log.info("  URLs match - already configured")
+                # Simulate phone tap - read NDEF unauthenticated
+                log.info("")
+                log.info("Reading tag (simulating phone tap)...")
+                tap_url = None
+                try:
+                    from ntag424_sdm_provisioner.commands.read_data import ReadData
+                    
+                    # Select NDEF file
+                    ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
+                    
+                    # Read NDEF (start with reasonable size)
+                    ndef_data = ReadData(file_no=0x04, offset=0, length=200).execute(card)
+                    
+                    # Extract URL from NDEF (skip TLV header, find URL)
+                    # NDEF format: 0x03 <len> 0xD1 0x01 <len> 0x55 <url_code> <url_bytes> 0xFE
+                    url_bytes = bytes(ndef_data)
+                    # Find 0x55 (URL record type)
+                    if 0x55 in url_bytes:
+                        url_start = url_bytes.index(0x55) + 2  # Skip 0x55 and URL prefix code
+                        url_end = url_bytes.index(0xFE) if 0xFE in url_bytes else len(url_bytes)
+                        tap_url = url_bytes[url_start:url_end].decode('utf-8')
+                        log.info(f"  Tap URL: {tap_url}")
+                    else:
+                        log.warning("  Could not parse URL from NDEF")
+                    
+                    # Re-select PICC for next operations
+                    SelectPiccApplication().execute(card)
+                except Exception as e:
+                    log.warning(f"  Could not read: {e}")
+                
+                # Show comparison
+                current_url = current_keys.notes if current_keys.notes else "(no URL saved)"
+                log.info("")
+                log.info(f"  Saved URL: {current_url}")
+                log.info(f"  New URL:   {new_url}")
+                log.info("")
+                
+                if tap_url and tap_url == new_url:
+                    log.info("✓ URLs match - coin is correctly configured")
                     return False, False  # Nothing to do
                 
                 log.info("")
@@ -87,23 +122,32 @@ def check_tag_state_and_prepare(card, uid: bytes, key_mgr: CsvKeyManager, new_ur
                 response = input("Select (1-3): ").strip()
                 return (response in ['1', '2']), False
             
-            # Bad state - offer reset
+            # Bad state - handle based on type
             elif current_keys.status in ["failed", "pending"]:
                 log.warning(f"Tag Status: {current_keys.status.upper()} (bad state)")
-                log.warning("  RESET recommended")
-                response = input("Reset to factory? (Y/n): ").strip().lower()
                 
-                if response != 'n':
-                    factory_key = bytes(16)
-                    with trace_block("Factory Reset"):
-                        auth_conn = AuthenticateEV2(key=factory_key, key_no=0).execute(card)
-                        auth_conn.send(ChangeKey(0, factory_key, factory_key, 0x00))
+                if current_keys.status == "failed":
+                    # Failed = previous provision attempt failed
+                    # Keys are still factory (no reset needed, saves auth attempt)
+                    log.info("  Assuming factory keys (skipping reset to avoid rate limit)")
+                    return True, False
+                
+                else:  # pending
+                    # Pending = keys partially changed (need reset)
+                    log.warning("  RESET recommended")
+                    response = input("Reset to factory? (Y/n): ").strip().lower()
                     
-                    factory_keys = TagKeys.from_factory_keys(uid.hex().upper())
-                    key_mgr.save_tag_keys(uid, factory_keys)
-                    log.info("  Reset complete")
-                    return True, True
-                return True, False
+                    if response != 'n':
+                        factory_key = bytes(16)
+                        with trace_block("Factory Reset"):
+                            auth_conn = AuthenticateEV2(key=factory_key, key_no=0).execute(card)
+                            auth_conn.send(ChangeKey(0, factory_key, factory_key, 0x00))
+                        
+                        factory_keys = TagKeys.from_factory_keys(uid.hex().upper())
+                        key_mgr.save_tag_keys(uid, factory_keys)
+                        log.info("  Reset complete")
+                        return True, True
+                    return True, False
             
             # Factory - just provision
             else:
@@ -231,120 +275,149 @@ def provision_game_coin():
                 log.info(f"    SDM MAC:     {new_keys.sdm_mac_key[:16]}...")
                 log.info("")
                 
-                # Authenticate with CURRENT (old) PICC Master Key
-                # Per charts.md: Change ALL keys in ONE auth session!
-                with AuthenticateEV2(current_picc_key, key_no=0).execute(card) as auth_conn:
-                    log.info("   Authenticated with current key")
-                    log.info("")
-                    log.info("  Changing all keys in single session (prevents 0x91AD)...")
+                # SESSION 1: Change Key 0 only
+                log.info("  [Session 1] Changing Key 0...")
+                with trace_block("Session 1: Change Key 0"):
+                    with AuthenticateEV2(current_picc_key, key_no=0).execute(card) as auth_conn:
+                        log.info("    Authenticated with old Key 0")
+                        
+                        with trace_block("ChangeKey 0"):
+                            res = ChangeKey(
+                                key_no_to_change=0,
+                                new_key=new_keys.get_picc_master_key_bytes(),
+                                old_key=None
+                            ).execute(auth_conn)
+                            log.info(f"    Key 0 changed - {res}")
+                        
+                        # Session is now INVALID (Key 0 changed)
+                        log.info("    Session 1 ended (invalid after Key 0 change)")
+                
+                log.info("")
+                log.info("  [Session 2] Changing Key 1 and Key 3...")
+                log.info("    (Re-authenticating with NEW Key 0)")
+                
+                # SESSION 2: Change Key 1 and Key 3 with NEW Key 0
+                with trace_block("Session 2: Change Keys 1 and 3"):
+                    new_picc_key = new_keys.get_picc_master_key_bytes()
                     
-                    # Change Key 0 (PICC Master Key)
-                    log.info("    Key 0 (PICC Master)...", end=" ")
-                    res = ChangeKey(
-                        key_no_to_change=0,
-                        new_key=new_keys.get_picc_master_key_bytes(),
-                        old_key=None
-                    ).execute(auth_conn)
-                    log.info(f"response:{res}")
-                    
-                    # Change Key 1 (App Read Key) - SAME SESSION!
-                    log.info("    Key 1 (App Read)...", end=" ")
-                    res = ChangeKey(
-                        key_no_to_change=1,
-                        new_key=new_keys.get_app_read_key_bytes(),
-                        old_key=None
-                    ).execute(auth_conn)
-                    log.info(f"response:{res}")
-                    
-                    # Change Key 3 (SDM MAC Key) - SAME SESSION!
-                    log.info("    Key 3 (SDM MAC)...", end=" ")
-                    res = ChangeKey(
-                        key_no_to_change=3,
-                        new_key=new_keys.get_sdm_mac_key_bytes(),
-                        old_key=None
-                    ).execute(auth_conn)
-                    log.info(f"response:{res}")
-                    log.info("   All keys changed in single session")
+                    with AuthenticateEV2(new_picc_key, key_no=0).execute(card) as auth_conn:
+                        log.info("    Authenticated with NEW Key 0")
+                        
+                        # Change Key 1
+                        with trace_block("ChangeKey 1"):
+                            res = ChangeKey(
+                                key_no_to_change=1,
+                                new_key=new_keys.get_app_read_key_bytes(),
+                                old_key=None
+                            ).execute(auth_conn)
+                            log.info(f"    Key 1 changed - {res}")
+                        
+                        # Change Key 3
+                        with trace_block("ChangeKey 3"):
+                            res = ChangeKey(
+                                key_no_to_change=3,
+                                new_key=new_keys.get_sdm_mac_key_bytes(),
+                                old_key=None
+                            ).execute(auth_conn)
+                            log.info(f"    Key 3 changed - {res}")
+                        
+                        log.info("    All keys changed successfully")
+                        log.info("")
+                        
+                        # Step 5: Configure SDM (still in Session 2 with NEW Key 0)
+                        log.info("  [Session 2] Configuring SDM and writing NDEF...")
+                        log.info("-" * 70)
+                        
+                        access_rights = AccessRights(
+                            read=AccessRight.FREE,
+                            write=AccessRight.KEY_0,
+                            read_write=AccessRight.FREE,
+                            change=AccessRight.FREE
+                        )
+                        
+                        sdm_config = SDMConfiguration(
+                            file_no=0x02,  # NDEF file
+                            comm_mode=CommMode.PLAIN,  # PLAIN mode (no CMAC wrapping)
+                            access_rights=access_rights,
+                            enable_sdm=True,
+                            sdm_options=(
+                                FileOption.UID_MIRROR |   # Bit 7
+                                FileOption.READ_COUNTER   # Bit 6
+                            ),
+                            offsets=offsets
+                        )
+                        
+                        log.info(f"    Config: {sdm_config}")
+                        log.info("    Configuring SDM...")
+                        
+                        try:
+                            # ChangeFileSettings (PLAIN mode for SDM config)
+                            ChangeFileSettings(sdm_config).execute(card)
+                            log.info("    SDM configured successfully!")
+                        except ApduError as e:
+                            log.warning(f"    SDM configuration failed: {e}")
+                            log.info("    Continuing with NDEF write (SDM placeholders won't work)")
+                        log.info("")
+                        
+                        # Write NDEF message
+                        log.info("    Writing NDEF message...")
+                        log.info("    Selecting NDEF file...")
+                        ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
+                        log.info("    NDEF file selected")
+                        
+                        log.info(f"    Writing {len(ndef_message)} bytes (chunked)...")
+                        WriteNdefMessage(ndef_data=ndef_message).execute(card)
+                        log.info("    NDEF message written")
+                        
+                        # Re-select PICC application
+                        SelectPiccApplication().execute(card)
+                        log.info("    PICC application re-selected")
+                        log.info("")
                 
                 # Context manager will auto-commit on success
-                log.info("  [Phase 2] All keys changed successfully!")
-                log.info("   Keys updated (status='provisioned')")
+                log.info("  [Phase 2] Provisioning complete!")
                 log.info("")
             
-            # Step 5: Re-authenticate with new PICC Master Key (only ONE re-auth)
-            log.info("Step 5: Re-authenticate with New PICC Master Key")
-            log.info("        (Single re-auth prevents 0x91AD rate limit)")
+            # Step 6: Verify provisioning - Simulate phone tap
+            log.info("Step 6: Verify Provisioning (Simulate Phone Tap)")
             log.info("-" * 70)
-            new_picc_key = key_mgr.get_key(uid, key_no=0)
-            log.info("  Authenticating with new key...")
-            
-            with AuthenticateEV2(new_picc_key, key_no=0).execute(card) as auth_conn:
-                log.info("   Authenticated with new key")
-                log.info("")
-                
-                # Step 7: Configure SDM
-                log.info("Step 7: Configure SDM on NDEF File")
-                log.info("-" * 70)
-                
-                access_rights = AccessRights(
-                    read=AccessRight.FREE,
-                    write=AccessRight.KEY_0,
-                    read_write=AccessRight.FREE,
-                    change=AccessRight.FREE
-                )
-                
-                sdm_config = SDMConfiguration(
-                    file_no=0x02,  # NDEF file
-                    comm_mode=CommMode.PLAIN,  # PLAIN mode (no CMAC wrapping)
-                    access_rights=access_rights,
-                    enable_sdm=True,
-                    sdm_options=(
-                        FileOption.UID_MIRROR |   # Bit 7
-                        FileOption.READ_COUNTER   # Bit 6
-                    ),
-                    offsets=offsets
-                )
-                
-                log.info(f"  Config: {sdm_config}")
-                log.info("  Configuring SDM...")
-                
-                try:
-                    # ChangeFileSettings (PLAIN mode for SDM config)
-                    ChangeFileSettings(sdm_config).execute(card)
-                    log.info("   SDM configured successfully!")
-                except ApduError as e:
-                    log.warning(f"  SDM configuration failed: {e}")
-                    log.info("   This is a known issue - continuing with NDEF write")
-                    log.info("   SDM placeholders won't be replaced (static URL only)")
-                log.info("")
-                
-                # Step 8: Write NDEF message
-                log.info("Step 8: Write NDEF Message")
-                log.info("-" * 70)
-                log.info("  Selecting NDEF file...")
-                ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
-                log.info("   NDEF file selected")
-                
-                log.info(f"  Writing {len(ndef_message)} bytes...")
-                WriteNdefMessage(ndef_data=ndef_message).execute(card)
-                log.info("   NDEF message written")
-                
-                # Re-select PICC application
-                SelectPiccApplication().execute(card)
-                log.info("   PICC application re-selected")
-                log.info("")
-            
-            # Step 9: Verify provisioning
-            log.info("Step 9: Verify Provisioning")
-            log.info("-" * 70)
+            log.info("  Reading NDEF unauthenticated (like a phone would)...")
             
             try:
-                counter = GetFileCounters(file_no=0x02).execute(card)
-                log.info(f"  [OK] SDM counter: {counter}")
-                log.info("  [SUCCESS] SDM is working!")
-            except ApduError as e:
-                log.info(f"  [INFO] GetFileCounters: {e}")
-                log.info("   SDM may not be fully configured (expected if ChangeFileSettings failed)")
+                from ntag424_sdm_provisioner.commands.read_data import ReadData
+                
+                # Select NDEF file
+                ISOSelectFile(ISOFileID.NDEF_FILE).execute(card)
+                
+                # Read NDEF
+                ndef_data = ReadData(file_no=0x04, offset=0, length=200).execute(card)
+                
+                # Extract URL
+                url_bytes = bytes(ndef_data)
+                if 0x55 in url_bytes:
+                    url_start = url_bytes.index(0x55) + 2
+                    url_end = url_bytes.index(0xFE) if 0xFE in url_bytes else len(url_bytes)
+                    tap_url = url_bytes[url_start:url_end].decode('utf-8')
+                    
+                    log.info("")
+                    log.info(f"  Tap URL: {tap_url}")
+                    log.info("")
+                    
+                    # Check for SDM placeholders
+                    if "00000000000000" in tap_url:
+                        log.info("  SDM Status: Placeholders present (SDM not fully active)")
+                        log.info("  URL will be static until SDM is properly configured")
+                    else:
+                        log.info("  SDM Status: ACTIVE! URL contains tap-unique values")
+                else:
+                    log.warning("  Could not parse URL from NDEF")
+                
+                # Re-select PICC
+                SelectPiccApplication().execute(card)
+                
+            except Exception as e:
+                log.warning(f"  Could not verify: {e}")
+            
             log.info("")
             
             # Summary
