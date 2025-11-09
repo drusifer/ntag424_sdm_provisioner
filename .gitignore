@@ -33,6 +33,7 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.pyc
 MANIFEST
 
 # Unit test / coverage reports
@@ -71,3 +72,4 @@ src/ntag424_sdm_provisioner.egg-info/
 tag_keys.csv
 tag_keys_backup.csv
 
+src/ntag424_sdm_provisioner/commands/__pycache__/change_file_settings.cpython-314.pyc

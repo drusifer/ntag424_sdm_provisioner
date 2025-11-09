@@ -331,9 +331,11 @@ class AuthenticatedConnection:
                 log.error("[AUTH_CONN]   1. Session is invalid (Key 0 was changed)")
                 log.error("[AUTH_CONN]   2. CMAC verification failed")
                 log.error("[AUTH_CONN]   3. Wrong session keys")
-            # Let error handling proceed normally
+            
+            # Raise exception for failed command
+            raise ApduError(f"{command} failed", sw1, sw2)
         
-        # Handle response data
+        # Handle response data (only reached on success)
         if data:
             # Check if data is CMAC-only (8 bytes) or encrypted data
             if len(data) == 8:

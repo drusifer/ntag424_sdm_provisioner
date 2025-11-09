@@ -19,29 +19,18 @@ class ChangeFileSettings(ApduCommand):
     def __init__(self, config: SDMConfiguration):
         super().__init__(use_escape=False)  # Use transmit for authenticated commands
         self.config = config
-    
-    def __str__(self) -> str:
-        return f"ChangeFileSettings(file=0x{self.config.file_no:02X})"
-    
-    def execute(self, connection: NTag424CardConnection) -> SuccessResponse:
-        """
-        Execute ChangeFileSettings for PLAIN mode (no authentication).
         
-        Type-safe: Only accepts NTag424CardConnection.
-        For authenticated modes, use ChangeFileSettingsAuth instead.
-        
-        Args:
-            connection: Raw card connection
-            
-        Returns:
-            SuccessResponse on success
-        """
         if self.config.comm_mode != CommMode.PLAIN:
             raise ValueError(
                 f"ChangeFileSettings only supports CommMode.PLAIN. "
                 f"For {self.config.comm_mode}, use ChangeFileSettingsAuth"
             )
-        
+    
+    def __str__(self) -> str:
+        return f"ChangeFileSettings(file=0x{self.config.file_no:02X})"
+    
+    def build_apdu(self) -> list:
+        """Build APDU for connection.send(command) pattern."""
         # Use helper to build payload
         settings_payload = build_sdm_settings_payload(self.config)
         
@@ -53,14 +42,10 @@ class ChangeFileSettings(ApduCommand):
         apdu = list(cmd_header_apdu) + [len(cmd_data)] + list(cmd_data) + [0x00]
         
         log.debug(f"ChangeFileSettings (PLAIN) APDU: {hexb(apdu)}")
-        
-        # Send command
-        _, sw1, sw2 = self.send_command(
-            connection,
-            apdu,
-            allow_alternative_ok=False
-        )
-        
+        return apdu
+    
+    def parse_response(self, data: bytes, sw1: int, sw2: int) -> SuccessResponse:
+        """Parse response for connection.send(command) pattern."""
         return SuccessResponse(f"File {self.config.file_no:02X} settings changed")
 
 
