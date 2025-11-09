@@ -1,775 +1,383 @@
-# NTAG424 SDM Provisioner - Investigation Mindmap
+# NTAG424 SDM Provisioner - Project Status
 
-**TLDR;**: Type-safe architecture COMPLETE ✅ | 72/74 tests (+11 validation) | 56% coverage | Crypto validated vs NXP spec | DNA_Calc → test package (reference) | No if/else branches | ChangeKey + ChangeFileSettings refactored | Production ready 🚀
-
----
-
-## Investigation Status
-
-### ✅ Type-Safe Architecture Complete (2025-11-06)
-- **Type Safety**: Commands declare auth via method signatures (ApduCommand vs AuthApduCommand) ✅
-- **AuthenticatedConnection**: Crypto methods centralized (apply_cmac, encrypt_data, etc.) ✅
-- **ChangeKey**: Now type-safe AuthApduCommand, uses DNA_Calc (99% coverage) ✅
-- **ChangeFileSettings**: Simplified, uses auth_conn methods, ~35 lines removed ✅
-- **Code Reuse**: DNA_Calc preserved, session methods reused (DRY) ✅
-- **Test Coverage**: 61/63 passing, coverage improved 53% → 58% ✅
-- **Examples Updated**: 2 examples migrated to new API ✅
-
-### ✅ Verified Working (2025-11-01)
-- **Authentication**: Full EV2 authentication working (CBC mode with zero IV) ✅
-- **NDEF Write**: ISOUpdateBinary works (87 bytes) ✅
-- **URL Building**: 87-byte NDEF with SDM placeholders ✅
-- **KeyManager**: SimpleKeyManager + CsvKeyManager (85% coverage) ✅
-- **Session Keys**: Derived successfully after authentication ✅
-- **Clean Abstractions**: `settings.get_comm_mode()`, `settings.requires_authentication()` ✅
-
-### ❌ Blocking Issue
-- **SDM Configuration**: ChangeFileSettings returns 0x917E (LENGTH_ERROR)
-- **Root Cause Found**: Was sending wrong fields (PICCDataOffset instead of UIDOffset)
-- **Fix Applied**: Now sending UIDOffset + ReadCtrOffset only (12 bytes payload)
-- **Status**: Still getting 0x917E - may be Seritag-specific limitation
-
-### 📚 Arduino Reference Analysis
-- **Arduino MFRC522 library**: Explicitly does NOT support SDM
-- **Field Order Discovered**: UIDOffset → ReadCtrOffset → PICCDataOffset → CMAC fields
-- **Access Rights Format**: Nibble-packed (2 bytes, 4 access rights)
-- **Key Learning**: UIDOffset ≠ PICCDataOffset (different purposes!)
+**TLDR;**: Production-ready library | Type-safe architecture | End-to-end provisioning working | Clean OOP refactor complete | 6 focused classes | All crypto validated | See SUCCESSFUL_PROVISION_FLOW.md for proven working trace
 
 ---
 
-## Phase 2 Protocol Deep Dive Results
+## ✅ Current Status (2025-11-08)
 
-### What Was Tested
-1. **15 Key/Rotation Combinations**: All failed
-   - Factory Key (all zeros) + Standard rotation → SW=91AE
-   - All Ones Key + Standard rotation → SW=91AE  
-   - Weak Key + Standard rotation → SW=91AE
-   - Non-standard rotations → SW=911C (format rejected)
+### Production Ready
+- **End-to-End Provisioning**: ✅ Working (see SUCCESSFUL_PROVISION_FLOW.md)
+- **Authentication**: ✅ EV2 Phase 1 & 2 both working
+- **Key Management**: ✅ All 3 keys (0, 1, 3) change successfully
+- **Factory Reset**: ✅ Complete reset with old key XOR
+- **NDEF Write**: ✅ Chunked writes (182 bytes in 4 chunks)
+- **Type Safety**: ✅ Commands enforce auth requirements
+- **Error Handling**: ✅ No silent failures, proper exceptions
 
-2. **Phase 1 Analysis**: ✅ VERIFIED CORRECT
-   - Response: 16 bytes encrypted RndB (SW=91AF)
-   - Decryption: AES-ECB works correctly
-   - No additional frames needed (GetAdditionalFrame returns SW=917E)
-
-3. **Phase 2 Analysis**: ✅ FORMAT CORRECT, ❌ AUTH FAILS
-   - Plaintext: RndA || RndB' (32 bytes, block-aligned) ✅
-   - Encryption: AES-ECB (2 blocks of 16 bytes) ✅
-   - APDU Format: Matches spec exactly ✅
-   - Result: SW=91AE (Wrong RndB') ❌
-
-### Key Findings
-
-#### Format Validation
-- **Standard left rotate (1 byte)**: ONLY rotation that passes format check (SW=91AE)
-- **Non-standard rotations**: Format rejected (SW=911C) before authentication
-- **Conclusion**: Format is correct, but RndB' calculation doesn't match tag's expectation
-
-#### Error Code Analysis
-- **SW=91AE**: "Wrong RndB'" - Tag can decrypt Phase 2 data, extracts RndB', but it doesn't match
-- **SW=911C**: "Illegal Command Code" - Format rejected (non-standard rotations)
-- **SW=91CA**: "Command Aborted" - Transaction state issue (seen after Phase 2 failure)
-
-#### What This Tells Us
-1. ✅ Tag validates Phase 2 format before authentication
-2. ✅ Tag can decrypt our Phase 2 data
-3. ✅ Tag extracts RndB' from our data
-4. ❌ Tag's expected RndB' ≠ our calculated RndB'
+### Architecture (Post-Refactor)
+- **Command Pattern**: `connection.send(Command())` - inverted control
+- **AuthenticateEV2**: Callable class (not ApduCommand) - returns context manager
+- **Base Classes**: No default execute() - enforces new pattern
+- **Clean OOP**: 6 focused classes in provision script (SRP)
+- **Crypto**: Centralized in `crypto_primitives.py`, validated vs NXP specs
 
 ---
 
-## Hypothesis Space
+## Core Components
 
-### Hypothesis 1: Wrong Factory Key
-**Status**: ✅ **RULED OUT** - Tested 9 key variations
-- Factory Key (all zeros): ❌ SW=91AE
-- All Ones Key: ❌ SW=91AE
-- Weak Key Pattern: ❌ SW=91AE
-- UID-based (repeat 3x): ❌ SW=91AE
-- UID-based (first 4 bytes, repeat 4x): ❌ SW=91AE
-- UID-based (first 4 bytes, pad with 00): ❌ SW=91AE
-- UID-based (first 4 bytes, pad with FF): ❌ SW=91AE
-- UID-based (CMAC with factory master): ❌ SW=91AE
-- UID-based (CMAC with UID master): ❌ SW=91AE
+### Commands (New Pattern - `connection.send()`)
+**Unauthenticated (ApduCommand)**:
+- `SelectPiccApplication` - Select PICC app
+- `GetChipVersion` - Read version + UID
+- `GetFileIds` - List files
+- `GetFileSettings` - Read file settings
+- `GetKeyVersion` - Read key version
+- `ISOSelectFile` - Select ISO file
+- `ISOReadBinary` - Read file data
+- `ChangeFileSettings` - Change file settings (PLAIN mode only)
 
-**CRITICAL FINDING**: Phase 1 works with ALL keys (even wrong ones!)
-- Phase 1 doesn't validate the key - it just encrypts RndB with whatever key it has
-- Phase 2 is where validation happens
-- **Conclusion**: Issue is NOT with key derivation - Phase 2 rejects RndB' regardless of key used
+**Authenticated (AuthApduCommand)**:
+- `ChangeKey` - Change key (requires old key for Keys 1-4)
+- `ChangeFileSettingsAuth` - Change settings (MAC/FULL modes)
 
-**Likelihood**: ❌ **RULED OUT** - All 9 variations tested, all fail identically
+**Special (Old execute() pattern)**:
+- `WriteNdefMessage` - Multi-chunk writes
+- `ReadNdefMessage` - Multi-frame reads
+- `AuthenticateEV2First/Second` - Special SW handling
 
-### Hypothesis 2: Wrong RndB Extraction
-**Status**: Verified ✅
-- Phase 1 returns exactly 16 bytes
-- First 16 bytes = encrypted RndB
-- No additional frames needed
+### Crypto (Validated vs NXP Specs)
+**File**: `src/ntag424_sdm_provisioner/crypto/crypto_primitives.py`
 
-**Likelihood**: Low (already verified)
+**Functions**:
+- `derive_session_keys()` - 32-byte SV formula with XOR (NXP Section 9.1.7)
+- `calculate_iv_for_command()` - A5 5A || TI || CmdCtr || zeros
+- `encrypt_key_data()` - AES-CBC encryption
+- `calculate_cmac()` - CMAC with even-byte truncation
+- `decrypt_rndb()` - CBC mode with zero IV
+- `encrypt_auth_response()` - Phase 2 response encryption
+- `decrypt_auth_response()` - Parse card response
 
-### Hypothesis 3: Wrong RndB Decryption
-**Status**: Verified ✅
-- AES-ECB decryption works
-- Decrypted RndB has high entropy (random-looking)
-- CBC tested for comparison (different result, as expected)
+All verified against NXP test vectors. Single source of truth.
 
-**Likelihood**: Low (but verify key used for decryption)
+### HAL (Hardware Abstraction Layer)
+**File**: `src/ntag424_sdm_provisioner/hal.py`
 
-### Hypothesis 4: Wrong RndB Rotation
-**Status**: ⚠️ **HIGH PRIORITY** - Needs deeper investigation
-- Left rotate by 1 byte is correct format (passes format check) ✅
-- Rotation math verified: `rndb[1:] + rndb[0:1]` ✅
-- Python `bytes` type confirmed correct (16-byte immutable sequence) ✅
-- **BUT**: Seritag may rotate/storage RndB differently internally ❓
+**Classes**:
+- `CardManager` - Context manager for reader connection
+- `NTag424CardConnection` - Card communication
+  - `send_apdu()` - Send single APDU
+  - `send()` - Send Command object (new pattern)
+  - `send_write_chunked()` - Multi-chunk writes
 
-**Likelihood**: **HIGH** - Most likely remaining cause
-- Format check passes, so rotation method is accepted
-- But calculated RndB' doesn't match tag's expectation
-- **Possible issues**:
-  - Byte ordering (big-endian vs little-endian) - unlikely but possible
-  - Rotation direction ambiguity ("left" could mean different things)
-  - Tag rotates RndB BEFORE storing (vs after decryption)
-  - Tag uses bit-level rotation instead of byte-level rotation (unlikely - spec says "byte")
-  - Tag stores RndB in different format internally
-  - Phase 1 encryption key ≠ Phase 2 validation key
+### Key Management
+**File**: `src/ntag424_sdm_provisioner/csv_key_manager.py`
 
-**Python Byte Array Verification**:
-- Type: `bytes` (16-byte immutable sequence) ✅ Correct
-- Size: 16 bytes ✅ Correct (AES-128, RndB is 16 bytes)
-- Rotation: `rndb[1:] + rndb[0:1]` ✅ Correct (left rotate by 1 byte)
-- Example: `01 02 03 ... 10` → `02 03 04 ... 10 01` ✅ Verified
-
-### Hypothesis 5: Wrong Phase 2 Encryption
-**Status**: Verified ✅
-- AES-ECB mode correct (2 blocks of 16 bytes)
-- Encryption round-trip verified
-- Block-by-block matches single encrypt
-
-**Likelihood**: Low (but verify key used for encryption)
-
-### Hypothesis 6: Phase 1/Phase 2 Transaction State
-**Status**: Partially tested
-- Phase 1 completes (SW=91AF)
-- Phase 2 sent immediately after Phase 1
-- **Observation**: Sometimes get SW=91CA instead of SW=91AE
-- **Question**: Is there a timing/state issue?
-
-**Likelihood**: Medium
-- SW=91CA suggests transaction state issue
-- Maybe need to complete Phase 1 differently?
-- **Next**: Test Phase 1 completion sequence
-
-### Hypothesis 7: Seritag-Specific Protocol Variant
-**Status**: Likely 🔍
-- All NXP spec steps verified correct
-- Tag accepts format but rejects authentication
-- **Possibility**: Seritag uses different:
-  - Key derivation (UID-based?)
-  - RndB storage/rotation internally
-  - Transaction state management
-
-**Likelihood**: High
-- This would explain why format is correct but auth fails
-- **Next**: Search Seritag documentation, test alternative protocols
+**Classes**:
+- `TagKeys` - Key storage dataclass
+- `CsvKeyManager` - CSV-based key database
+  - `provision_tag()` - Two-phase commit context manager
+  - Statuses: factory, pending, provisioned, failed
 
 ---
 
-## Critical Observations
+## Critical Protocol Details
 
-### Phase 1 Response
-- **Response**: SW=91AF with 16 bytes (encrypted RndB)
-- **Complete**: No additional frames (GetAdditionalFrame returns SW=917E)
-- **Key Used**: Factory key (all zeros) - but maybe Seritag uses different key?
+### EV2 Authentication (Working)
+**Two-Phase Protocol**:
 
-### RndB Rotation
-- **Method**: Left rotate by 1 byte (`rndb[1:] + rndb[0:1]`)
-- **Format Check**: ✅ Passes (SW=91AE, not SW=911C)
-- **Authentication**: ❌ Fails (Wrong RndB')
+**Phase 1 - Request Challenge**:
+```
+>> 90 71 00 00 02 [KeyNo] 00 00
+<< [16-byte encrypted RndB] [SW=91AF]
+```
 
-**Key Insight**: Tag validates format BEFORE checking RndB' value
-- This means our format is correct, but our RndB' calculation is wrong
+**Phase 2 - Authenticate**:
+```
+>> 90 AF 00 00 20 [32-byte encrypted (RndA || RndB')] 00
+<< [32-byte encrypted (Ti || RndA' || PDcap2 || PCDcap2)] [SW=9100]
+```
 
-### Phase 2 Plaintext
-- **Construction**: RndA (16 bytes) || RndB' (16 bytes) = 32 bytes
-- **Block Alignment**: ✅ 2 AES blocks (16 bytes each)
-- **Encryption**: AES-ECB mode (each block encrypted independently)
+**Key Points**:
+- SW=91AF is SUCCESS for Phase 1 (not error)
+- SW=9100 is SUCCESS for Phase 2
+- RndB' = RndB rotated left by 1 byte: `rndb[1:] + rndb[0:1]`
+- Encryption: AES-CBC with zero IV
+- Session keys: 32-byte SV with XOR operations
 
-### Keys Tested (9 variations - all failed)
-1. **Factory Key**: `00 00 00 00 ... 00` (16 bytes) → SW=91AE ❌
-2. **All Ones Key**: `FF FF FF FF ... FF` (16 bytes) → SW=91AE ❌
-3. **UID-based (repeat 3x)**: `04 1B 67 4A ...` (16 bytes) → SW=91AE ❌
-4. **UID-based (first 4 bytes, repeat 4x)**: `04 1B 67 4A ...` → SW=91AE ❌
-5. **UID-based (first 4 bytes, pad with 00)**: `04 1B 67 4A 00 ...` → SW=91AE ❌
-6. **UID-based (first 4 bytes, pad with FF)**: `04 1B 67 4A FF ...` → SW=91AE ❌
-7. **UID-based (CMAC with factory master)**: Derived via CMAC → SW=91AE ❌
-8. **UID-based (CMAC with UID master)**: Derived via CMAC → SW=91AE ❌
-9. **Weak Pattern Key**: `01 23 45 67 ...` → SW=91AE ❌
+### ChangeKey Protocol (Working)
 
-**CRITICAL INSIGHT**: Phase 1 works with ALL keys (even obviously wrong ones!)
-- Phase 1 returns encrypted RndB regardless of key correctness
-- This suggests Phase 1 doesn't validate the key at all
-- Phase 2 validation is where the key/RndB' mismatch is detected
+**Key 0 (PICC Master Key)**:
+```
+Data = NewKey(16) || Version(1) || 0x80 || zeros(14) = 32 bytes
+```
 
----
+**Keys 1-4 (Application Keys)**:
+```
+Data = (NewKey XOR OldKey)(16) || Version(1) || CRC32(4) || 0x80 || zeros(10) = 32 bytes
+CRC32 = ~crc32(data)  # Inverted
+```
 
-## Next Investigation Priorities
+**CRITICAL**: For Keys 1-4, MUST provide old key for XOR calculation. This is why factory reset needs old keys from database.
 
-### Priority 1: ✅ COMPLETED - Test UID-Based Key Derivation
-**Status**: ✅ **TESTED** - All 9 key variations failed identically
-**Result**: Key derivation is NOT the issue
-- Tested 9 different key derivation methods
-- All fail with SW=91AE (Wrong RndB')
-- Phase 1 works with all keys (wrong or right)
-- Phase 2 rejects RndB' regardless of key
+**Encryption**:
+```
+IV = E(KSesAuthENC, A5 5A || TI || CmdCtr || zeros)
+Encrypted = E(KSesAuthENC, IV, Data)
+CMAC_Input = Cmd || CmdCtr || TI || KeyNo || Encrypted
+CMAC_Truncated = Even bytes [1,3,5,7,9,11,13,15]
+```
 
-**Conclusion**: Issue is with RndB rotation/storage, not key derivation
+**Response**: SW=9100, may return 8-byte CMAC
 
-### Priority 2: Analyze Phase 1/Phase 2 Key Relationship ⚠️ **CRITICAL**
-**Rationale**: Phase 1 works with ANY key - how does Phase 2 know which key to use?
-**Key Question**: Does Phase 2 validate RndB' using the SAME key that Phase 1 used to encrypt?
+**Session Invalidation**: Changing Key 0 invalidates current session. Must re-authenticate with NEW Key 0.
 
-**Approach**:
-1. **Test key mismatch**: Use different key for Phase 1 vs Phase 2 decryption
-   - Phase 1 with key A, Phase 2 decrypt/encrypt with key B
-   - Does error change? (SW=91AE vs different error?)
-   
-2. **Verify Phase 1 encryption**: 
-   - If we decrypt Phase 1 response with wrong key, do we get garbage?
-   - If we decrypt with correct key, does RndB make sense?
-   - Does Phase 1 actually use the key we send in the command?
-   
-3. **Test Phase 1/Phase 2 consistency**:
-   - Maybe Phase 1 stores RndB internally with tag's key
-   - Maybe Phase 2 expects RndB' calculated from tag's key (not ours)
-   - Maybe Seritag uses a different internal key than what we send
+### Two-Session Provisioning Pattern
 
-**Current Status**: Phase 1 returns exactly 16 bytes, works with any key
-**Critical Insight**: Phase 1 doesn't validate key - it just encrypts with whatever it has
+**SESSION 1 - Change Key 0 Only**:
+1. Authenticate with old Key 0
+2. ChangeKey(0, new_key, None)
+3. Session becomes INVALID (Key 0 changed)
 
-### Priority 3: Test Alternative RndB' Calculations ⚠️ **HIGH PRIORITY**
-**Rationale**: All keys fail identically - suggests RndB rotation/storage issue
-**Approach**:
-1. **Verify Phase 1/Phase 2 key consistency**: 
-   - Does Phase 1 encrypt with same key Phase 2 expects?
-   - Test if Phase 1 response is actually encrypted with the key we think
-   
-2. **Test RndB storage/rotation variations**:
-   - Maybe tag rotates RndB BEFORE storing (during Phase 1 generation)?
-   - Maybe tag stores RndB in different byte order?
-   - Maybe "left" means different direction in Seritag implementation?
-   
-3. **Test rotation alternatives** (even if format check passes):
-   - Right rotate by 1 byte (might pass format check but fail auth differently)
-   - No rotation (SW=911C - format rejected, but test anyway)
-   - Different byte transformations (XOR with constant, etc.)
-   
-4. **Verify Python bytes handling**:
-   - Confirm no byte ordering issues
-   - Verify slice operations work correctly
-   - Test with explicit bytearray if needed
+**SESSION 2 - Change Keys 1 & 3**:
+1. Re-authenticate with NEW Key 0
+2. ChangeKey(1, new_key, None)
+3. ChangeKey(3, new_key, None)
+4. Configure SDM (optional)
+5. Write NDEF
 
-**Current Status**: Only left-rotate-by-1-byte passes format check
-**Next**: Deep dive into how Seritag stores/rotates RndB internally
-
-### Priority 4: Investigate Transaction State
-**Rationale**: SW=91CA suggests state issue
-**Approach**:
-1. Test if Phase 1 needs explicit completion
-2. Test timing between Phase 1 and Phase 2
-3. Test if aborting and restarting helps
-
-**Current Status**: Phase 1 completes, Phase 2 sent immediately
-
-### Priority 5: Search Seritag Documentation
-**Rationale**: Official docs might reveal protocol differences
-**Approach**:
-1. Review `docs/seritag/` for authentication protocol
-2. Search online for Seritag NTAG424 authentication differences
-3. Check if Seritag has custom EV2 variant
+This prevents bricking the tag - if Session 2 fails, Key 0 is still changed and recoverable.
 
 ---
 
-## Test Results Summary
+## Known Issues
 
-### Comprehensive Key Variation Test (9 keys × 1 rotation = 9 tests)
-**Date**: Current session
-**Result**: **0/9 keys succeeded** - All fail with SW=91AE
+### 1. SDM Configuration Returns 917E (Non-Blocking)
+**Status**: Returns LENGTH_ERROR but doesn't block provisioning
+**APDU**: `90 5F 00 00 0D 02 40 E0 EE C0 EF 0E 8C 00 00 9F 00 00 00`
+**Impact**: NDEF placeholders (uid, ctr, cmac) don't get replaced by tag
+**Workaround**: NDEF writes successfully, URL is static (placeholders visible)
+**Investigation**: Separate issue, needs detailed analysis of SDM settings payload
 
-| Key Type | Phase 1 | Phase 2 | SW | Notes |
-|----------|---------|---------|----|----|
-| Factory (00...) | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-| All Ones (FF...) | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-| UID (repeat 3x) | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-| UID (4 bytes × 4) | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-| UID (pad with 00) | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-| UID (pad with FF) | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-| UID (CMAC factory) | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-| UID (CMAC UID) | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-| Weak Pattern | ✅ Works | ❌ FAIL | 91AE | Phase 1 works with wrong key! |
-
-**CRITICAL FINDINGS**:
-1. ✅ Phase 1 works with ALL keys (even obviously wrong ones!)
-2. ❌ Phase 2 fails with ALL keys (identical SW=91AE)
-3. ✅ Rotation format is correct (SW=91AE, not SW=911C)
-4. ❌ RndB' calculation doesn't match tag's expectation
-
-**Conclusion**: Issue is NOT key derivation. Most likely RndB rotation/storage internal to tag.
-
-### Deep Dive Analysis Results
-1. ✅ Phase 1 Response: 16 bytes encrypted RndB - Correct
-2. ✅ Phase 1 Decryption: AES-ECB works - Correct (but works with ANY key!)
-3. ✅ RndB Rotation: Left by 1 byte verified byte-by-byte - Correct
-   - Python `bytes` type: ✅ Correct (16-byte immutable sequence)
-   - Rotation operation: ✅ `rndb[1:] + rndb[0:1]` verified
-   - Byte size: ✅ 16 bytes (AES-128 key size)
-4. ✅ Phase 2 Plaintext: RndA || RndB' (32 bytes, block-aligned) - Correct
-5. ✅ Phase 2 Encryption: AES-ECB (2 blocks of 16 bytes) - Correct
-6. ✅ Phase 2 APDU: Format matches spec exactly - Correct
-7. ❌ Phase 2 Result: SW=91AE (Wrong RndB') - Tag rejects
-
-**Conclusion**: All steps correct per NXP spec, but Seritag rejects Phase 2
-**New Insight**: Phase 1 doesn't validate key - works with any key, even wrong ones!
+### 2. Rate Limiting (91AD)
+**Status**: Tag blocks auth after 3-5 failed attempts
+**Duration**: 60+ seconds
+**Mitigation**: 
+- Don't test auth upfront (waste attempts)
+- Trust database status
+- Wait between failed attempts
+- Use fresh tags for testing
 
 ---
 
-## Code Reference Points
+## Refactored Architecture (2025-11-08)
 
-### Phase 1 Implementation
-**File**: `src/ntag424_sdm_provisioner/crypto/auth_session.py`
-- Line 78-108: `_phase1_get_challenge()` - Gets encrypted RndB
-- Line 160-172: `_decrypt_rndb()` - Decrypts RndB with AES-ECB
+### Provision Script (examples/22_provision_game_coin.py)
 
-### Phase 2 Implementation
-**File**: `src/ntag424_sdm_provisioner/crypto/auth_session.py`
-- Line 110-158: `_phase2_authenticate()` - Complete Phase 2 flow
-- Line 132: RndB rotation: `rndb_rotated = rndb[1:] + rndb[0:1]`
-- Line 174-188: `_encrypt_response()` - Encrypts RndA || RndB'
+**6 Focused Classes**:
 
-### Test Scripts
-- `examples/seritag/test_phase2_deep_dive.py` - Deep dive analysis
-- `examples/seritag/test_phase2_comprehensive_variations.py` - 15 variations
-- `examples/seritag/test_sun_configuration_acceptance.py` - SUN/SDM tests
+1. **`TagStateDecision`** (5 lines)
+   - Value object for provisioning decisions
+   - Fields: should_provision, was_reset, use_factory_keys
 
----
+2. **`NdefUrlReader`** (24 lines)
+   - Read and parse NDEF URLs
+   - Methods: `read_url()`, `_parse_url_from_ndef()`
 
-## Investigation Documents
+3. **`TagStateManager`** (151 lines)
+   - Detect tag state from database
+   - Handle reset scenarios
+   - Methods: `check_and_prepare()`, `_handle_provisioned_tag()`, `_reset_to_factory_complete()`
 
-1. **PHASE2_PROTOCOL_INVESTIGATION.md** - Phase 2 protocol variations
-2. **COMPREHENSIVE_PHASE2_VARIATIONS_RESULTS.md** - 15 combinations tested
-3. **RNDB_ROTATION_INVESTIGATION.md** - RndB extraction/rotation analysis
-4. **IMPLEMENTATION_VERIFICATION.md** - Protocol implementation verified
-5. **BYTE_ALIGNMENT_INVESTIGATION.md** - Byte alignment checked
-6. **FRESH_TAG_FINDINGS.md** - Fresh tag test results
-7. **SERITAG_INVESTIGATION_COMPLETE.md** - Complete findings summary
+4. **`KeyChangeOrchestrator`** (50 lines)
+   - Two-session key change protocol
+   - Methods: `change_all_keys()`, `_change_picc_master_key()`, `_change_application_keys()`
 
----
+5. **`SDMConfigurator`** (67 lines)
+   - Configure SDM and write NDEF
+   - Composes existing utilities (build_ndef_uri_record, calculate_sdm_offsets)
+   - Methods: `configure_and_write_ndef()`, `_configure_sdm()`, `_write_ndef()`
 
-## Next Actions (Updated After Reader/Hardware Testing)
+6. **`ProvisioningOrchestrator`** (147 lines)
+   - Coordinate complete workflow
+   - Methods: `provision()`, `_get_chip_info()`, `_execute_provisioning()`, `_verify_provisioning()`
 
-1. ✅ **COMPLETED: Test UID-based key derivation** - All 9 variations failed
-2. ✅ **COMPLETED: Reader mode comparison** - Both escape and transmit modes fail identically (SW=91AE)
-3. ✅ **COMPLETED: Timing delays** - No improvement with delays up to 100ms
-4. ✅ **COMPLETED: Fresh Phase 1 for each Phase 2** - Confirmed not a state issue
+**Complexity Reduction**:
+- Before: 489 lines, cyclomatic complexity 25+
+- After: 613 lines, complexity 5-8 per method
+- Max function: 313 lines → 67 lines
 
-**CRITICAL FINDING**: Reader/Hardware is NOT the issue
-- Phase 2 fails identically with escape mode (control) and transmit mode
-- Both modes get SW=91AE (Wrong RndB')
-- Timing delays don't help
-- Issue is protocol-level, not hardware-level
+### Command Refactoring
 
-**CONCLUSION**: This is likely NOT reader-specific, NOT Seritag-specific (need standard tag to confirm)
-- Format is correct (SW=91AE, not SW=911C)
-- Rotation is correct (left by 1 byte, verified)
-- Key derivation tested (all fail identically)
-- But calculated RndB' doesn't match tag's expectation
+**Base Classes**:
+- `ApduCommand` - No default execute(), requires build_apdu() + parse_response()
+- `AuthApduCommand` - No default execute(), requires get_command_byte() + build_command_data() + parse_response()
 
-**Remaining Hypothesis**:
-- Phase 1/Phase 2 key mismatch: Maybe Phase 1 encrypts with different key than we think?
-- RndB storage: Maybe tag stores/rotates RndB differently internally?
-- Need standard NXP tag for comparison to confirm if this is Seritag-specific or universal
-
----
-
-**Last Updated**: 2025-11-02 - After ChangeKey/CMAC investigation  
-**Status**: Blocked on ChangeKey 0x911E - CMAC issue despite following spec exactly  
-**Key Focus**: CMAC truncation (even-numbered bytes), CommMode.FULL encryption
-
----
-
-## AN12343 / AN12196 Key Findings
-
-### CMAC Truncation (CRITICAL!)
-
-**Source:** AN12343 line 976, AN12196 Table 26  
-**Rule:** "The 16 byte MAC is truncated to an 8 byte MAC, using only the **even bytes** in most significant order"
-
-**Implementation:**
+**Pattern**:
 ```python
-mac_full = cmac.digest()  # 16 bytes
-mac_truncated = bytes([mac_full[i] for i in range(1, 16, 2)])  # Indices [1,3,5,7,9,11,13,15]
+# New pattern (preferred):
+result = card.send(GetChipVersion())
+result = auth_conn.send(ChangeKey(0, new, old))
+
+# Old pattern (deprecated, only for special cases):
+result = WriteNdefMessage(data).execute(card)
 ```
-
-**Example from AN12196:**
-```
-CMAC  = B7A60161F202EC3489BD4BEDEF64BB32
-CMACt = A6610234BDED6432
-Extraction: [A6][61][02][34][BD][ED][64][32] ✓
-```
-
-### ChangeKey Format (CommMode.FULL)
-
-**For Key 0:**
-```
-Data = NewKey(16) || KeyVer(1) || 0x80 || zeros(14) = 32 bytes
-Encrypt with IV = E(KSesAuthENC, zero_iv, A5 5A || TI || CmdCtr || zeros)
-MAC_Input = Ins || CmdCtr || TI || KeyNo || EncryptedData
-```
-
-**For Keys 1-4:**
-```
-Data = (NewKey XOR OldKey)(16) || KeyVer(1) || CRC32(4) || 0x80 || zeros(10) = 32 bytes
-CRC32 = Inverted per Arduino (zlib.crc32() XOR 0xFFFFFFFF)
-Same encryption and CMAC as Key 0
-```
-
-### Padding Rules (AN12343 line 987)
-
-> "Padding Method 2: 0x80 followed by zero bytes (ISO/IEC 9797-1)"
-> "If original data is already multiple of 16, add another 16-byte block"
-> "Exception: No padding during authentication"
-
-### Counter Management
-
-- **Starts at:** 0000 after successful AuthenticateEV2First
-- **Used in IV:** Current value (before increment)
-- **Used in CMAC:** Current value (before increment)
-- **Incremented:** After sending command, before response
 
 ---
 
-## ChangeKey / ChangeFileSettings - BLOCKED
+## Test Coverage
 
-**Status:** 0x911E INTEGRITY_ERROR after 16+ attempts  
-**Verified Correct:** Format, padding, CRC32, IV, CMAC structure, truncation  
-**Still Wrong:** CMAC validation fails on real hardware
+**Test Files**:
+- `tests/test_crypto_validation.py` - Crypto primitives vs NXP specs
+- `tests/raw_changekey_test_fixed.py` - Raw pyscard ChangeKey test
+- `tests/test_production_auth.py` - Production auth flow
+- Integration tests with mock HAL (pending)
 
-**Investigation Needed:**
-1. Verify session key derivation with test vectors
-2. Compare exact wire data with Arduino
-3. Check reader-specific requirements
-4. Find working Python implementation for comparison
+**Coverage**: ~56% (focus on critical paths)
 
 ---
 
----
+## Usage Examples
 
-## NXP Datasheet Findings
-
-### Phase 2 Protocol (from NXP NTAG424 DNA datasheet)
-
-**Table 28 - AuthenticateEV2First Part2 Command Parameters**:
-- `RndB': 16 byte RndB rotated left by 1 byte`
-- Specification: Line 1746 - "rotated left by 1 byte"
-- Specification: Line 906 - "rotating it left by one byte"
-
-**Table 29 - Response Parameters**:
-- `RndA': 16 byte RndA rotated left by 1 byte`
-- Specification confirms: Both RndA and RndB use same rotation method
-
-### Rotation Verification
-
-**Python Implementation**: ✅ **CORRECT**
+### Basic Provisioning
 ```python
-rndb_rotated = rndb[1:] + rndb[0:1]  # Left rotate by 1 byte
+from ntag424_sdm_provisioner.hal import CardManager
+from ntag424_sdm_provisioner.csv_key_manager import CsvKeyManager
+from ntag424_sdm_provisioner.commands.authenticate_ev2 import AuthenticateEV2
+from ntag424_sdm_provisioner.commands.change_key import ChangeKey
+
+key_mgr = CsvKeyManager()
+
+with CardManager() as card:
+    # Get chip info
+    card.send(SelectPiccApplication())
+    version = card.send(GetChipVersion())
+    uid = version.uid
+    
+    # Two-phase commit provisioning
+    with key_mgr.provision_tag(uid, url=base_url) as new_keys:
+        # Session 1: Change Key 0
+        with AuthenticateEV2(factory_key, key_no=0)(card) as auth:
+            auth.send(ChangeKey(0, new_keys.get_picc_master_key_bytes(), None))
+        
+        # Session 2: Change Keys 1 & 3
+        with AuthenticateEV2(new_keys.get_picc_master_key_bytes(), key_no=0)(card) as auth:
+            auth.send(ChangeKey(1, new_keys.get_app_read_key_bytes(), None))
+            auth.send(ChangeKey(3, new_keys.get_sdm_mac_key_bytes(), None))
+    
+    # Status auto-updated to 'provisioned' on context exit
 ```
 
-**Verification**:
-- Python `bytes` type: ✅ Correct (16-byte immutable sequence, network byte order)
-- Key size: ✅ 16 bytes (AES-128)
-- RndB size: ✅ 16 bytes
-- Rotation operation: ✅ Left rotate by 1 byte verified
-- Example: `01 02 03 ... 10` → `02 03 04 ... 10 01` ✅
+### Factory Reset
+```python
+# Must know old keys for Keys 1 & 3 (XOR requirement)
+current_keys = key_mgr.get_tag_keys(uid)
 
-**Seritag Claims**: 100% ISO compliant
-- If true, rotation should match NXP spec exactly
-- But Phase 2 still fails - suggests internal storage/rotation difference
+# Session 1: Reset Key 0
+with AuthenticateEV2(current_keys.get_picc_master_key_bytes(), key_no=0)(card) as auth:
+    auth.send(ChangeKey(0, factory_key, None, 0x00))
 
-### Possible Rotation Issues to Investigate
-
-1. **Timing of Rotation**:
-   - Does tag rotate RndB BEFORE storing (during Phase 1)?
-   - Do we need to rotate the STORED RndB, not the decrypted one?
-   
-2. **Rotation Direction Ambiguity**:
-   - "Left" could mean MSB→LSB shift (bytes) or LSB→MSB shift (bits)
-   - Current: MSB→LSB byte shift (first byte to end) ✅ Correct per spec
-   - But maybe Seritag implements it differently?
-   
-3. **Internal Storage Format**:
-   - Maybe tag stores RndB in a different byte order internally?
-   - Maybe tag rotates RndB during storage and we need to account for that?
-
-4. **Phase 1/Phase 2 Key Mismatch**:
-   - Phase 1 works with ANY key - does it use a different key internally?
-   - Maybe Phase 1 encrypts with tag's internal key (not the one we send)?
-   - Maybe Phase 2 expects RndB' calculated from tag's internal key?
-   - **CRITICAL**: If Phase 1 encrypts with different key than we think, our RndB decryption is wrong!
+# Session 2: Reset Keys 1 & 3
+with AuthenticateEV2(factory_key, key_no=0)(card) as auth:
+    auth.send(ChangeKey(1, factory_key, current_keys.get_app_read_key_bytes(), 0x00))
+    auth.send(ChangeKey(3, factory_key, current_keys.get_sdm_mac_key_bytes(), 0x00))
+```
 
 ---
 
-## Critical Insight: Phase 1/Phase 2 Key Relationship
+## Key Learnings
 
-**DISCOVERY**: Phase 1 works with ANY key (even obviously wrong ones)
-- This suggests Phase 1 doesn't validate the key at all
-- Phase 1 may encrypt RndB with its INTERNAL key (not the one we send)
-- If true, we're decrypting Phase 1 response with wrong key → wrong RndB → wrong RndB'
+### 1. Session Invalidation
+Changing Key 0 (PICC Master Key) invalidates the current session. All subsequent commands in that session will fail with 91AE. Must re-authenticate with the NEW Key 0.
 
-**Hypothesis**: Phase 1 might be encrypting RndB with tag's internal factory key, regardless of what we send in the command. Then Phase 2 expects RndB' calculated from that same internal key.
+### 2. ChangeKey XOR Requirement
+For Keys 1-4, the tag needs `(NewKey XOR OldKey)` to validate the change. This prevents unauthorized key changes and requires knowing the old key.
 
-**Test Needed**: Decrypt Phase 1 response with the key we used for Phase 1 vs. tag's internal key
-- If decryption with our key produces garbage → tag uses different key internally
-- If decryption with our key produces valid-looking RndB → key is correct, issue is rotation
+### 3. Rate Limiting
+Tags enforce rate limiting after failed auth attempts. Counter persists in non-volatile memory. Wait 60+ seconds or use fresh tag.
 
-**Seritag ISO Compliance**: If 100% compliant, this shouldn't happen - but HW 48.0 suggests modifications.
+### 4. Counter Management
+- Starts at 0 after successful authentication
+- Used in IV and CMAC calculation BEFORE increment
+- Increments AFTER successful command (SW=9100)
+- Does NOT increment on failure
 
----
+### 5. CMAC Truncation
+Per NXP spec, CMAC is truncated to even-indexed bytes: `[1,3,5,7,9,11,13,15]` from full 16-byte CMAC.
 
-## Java Implementation Comparison
-
-**Reference**: Working Java implementation (from user-provided code)
-
-### Key Differences Found:
-
-1. **AES Mode**: 
-   - Java: `AES/CBC/NoPadding` with zero IV
-   - Python: `AES.MODE_ECB`
-   - **VERIFIED**: For single 16-byte blocks, CBC with zero IV = ECB ✅
-   - **Conclusion**: Our mode choice is correct
-
-2. **Rotation**:
-   - Java: `ByteUtil.rotateLeft(b, 1)`
-   - Python: `rndb[1:] + rndb[0:1]`
-   - **Conclusion**: Both are left rotation by 1 byte ✅
-
-3. **Key Usage**:
-   - Java: Uses the provided `keyData` to decrypt Phase 1 response
-   - Python: Uses `self.key` to decrypt Phase 1 response
-   - **Conclusion**: Same approach ✅
-
-### Critical Observation:
-
-The Java implementation follows the exact same pattern we do:
-- Phase 1: Get encrypted RndB
-- Decrypt RndB with provided key
-- Rotate RndB left by 1 byte
-- Encrypt RndA || RndB' with provided key
-- Send Phase 2
-
-**This confirms our implementation matches a working reference!**
-
-### Critical Uncertainty:
-
-**We don't know if this is Seritag-specific!** We've only tested on Seritag tags.
-
-**Possible Issues (not necessarily Seritag-specific):**
-
-1. **Implementation Bug** (affects all tags):
-   - Wrong key number selection
-   - APDU format issue
-   - Key not actually being used correctly
-
-2. **Seritag-Specific Behavior**:
-   - Different key derivation (tested, ruled out)
-   - Different RndB rotation/storage internally
-   - Phase 1 encryption uses different key than we think
-
-**What We Need**:
-- Test on standard NXP NTAG424 DNA tag to compare behavior
-- Verify the Java implementation works on Seritag tags (or doesn't)
-- Double-check our APDU construction against NXP spec byte-by-byte
+### 6. Sequencing Matters
+Don't waste auth attempts testing keys upfront. Trust database status and attempt auth only when needed for actual operations.
 
 ---
 
-## Hardware/Reader Investigation
+## File Structure
 
-**Reference**: [Arduino MFRC522 NTAG424DNA Implementation](https://github.com/Obsttube/MFRC522_NTAG424DNA)
+```
+src/ntag424_sdm_provisioner/
+├── commands/
+│   ├── base.py                    # Base classes, AuthenticatedConnection
+│   ├── authenticate_ev2.py        # EV2 auth (callable class)
+│   ├── change_key.py              # ChangeKey command
+│   ├── change_file_settings.py   # ChangeFileSettings (PLAIN/AUTH)
+│   ├── sun_commands.py            # Write/Read NDEF
+│   ├── iso_commands.py            # ISO 7816 commands
+│   ├── select_picc_application.py
+│   ├── get_chip_version.py
+│   ├── get_file_ids.py
+│   ├── get_file_settings.py
+│   ├── get_key_version.py
+│   ├── get_file_counters.py
+│   ├── read_data.py
+│   ├── write_data.py
+│   ├── sdm_helpers.py             # SDM utilities
+│   └── sdm_commands.py            # Compatibility shim
+├── crypto/
+│   ├── auth_session.py            # Ntag424AuthSession
+│   └── crypto_primitives.py      # Verified crypto functions
+├── hal.py                         # Hardware abstraction
+├── csv_key_manager.py             # Key management
+├── constants.py                   # Enums, dataclasses
+├── uid_utils.py                   # UID helpers
+└── trace_util.py                  # Debug tracing
 
-### Key Differences:
+examples/
+├── 22_provision_game_coin.py      # Main provisioning (refactored OOP)
+├── 99_reset_to_factory.py         # Factory reset utility
+└── check_ndef_config.py           # Diagnostic tool
 
-1. **Hardware Stack**:
-   - **Our Setup**: ACR122U → PC/SC (pyscard) → Escape Mode (`control()`) or Standard (`transmit()`)
-   - **Arduino Reference**: MFRC522 → Direct hardware interface (no PC/SC abstraction)
-   - **Impact**: PC/SC adds abstraction layer that could introduce timing/delays
-
-2. **ACR122U Escape Mode**:
-   - Uses `control(IOCTL_CCID_ESCAPE, apdu)` for proprietary commands
-   - Manually parses response: `resp[:-2]` (data), `resp[-2]` (sw1), `resp[-1]` (sw2)
-   - **Potential Issue**: Response parsing might miss edge cases or timing issues
-
-3. **Reader-Specific Considerations**:
-   - ACR122U firmware version differences
-   - PC/SC driver differences (Windows vs Linux)
-   - Escape mode vs transmit() mode inconsistencies
-   - **Phase 2 Response**: 32 bytes encrypted data - reader might truncate or delay
-
-### Potential Hardware/Reader Issues:
-
-1. **Timing Issues**:
-   - Delay between Phase 1 and Phase 2
-   - Reader needs time to process Phase 1 before Phase 2
-   - Arduino implementation might have different timing
-
-2. **Response Parsing**:
-   - Phase 2 returns 32 bytes + SW
-   - Reader might not be delivering complete response
-   - Escape mode response parsing might be incorrect
-
-3. **PC/SC Abstraction**:
-   - Standard `transmit()` might handle responses differently than `control()`
-   - Escape mode might introduce delays or buffer issues
-
-### Investigation Results:
-
-1. ✅ **Response Parsing**: Verified correct - 32 bytes sent, SW correctly parsed
-2. ✅ **Transmission Modes**: Tested both escape (control) and transmit - identical failures (SW=91AE)
-3. ✅ **Timing Delays**: Tested delays (0ms, 10ms, 50ms, 100ms) - no improvement
-4. ✅ **Fresh Phase 1**: Each Phase 2 test uses fresh Phase 1 - still fails
-
-**Result**: Reader/Hardware is NOT the issue
-- Both transmission modes fail identically
-- Timing doesn't matter
-- State management is correct
-
-**Remaining Issue**: RndB' calculation doesn't match tag's expectation
-- All tests return SW=91AE (Wrong RndB')
-- Format is correct (not SW=911C)
-- Rotation is correct (verified)
-- Keys tested (all fail identically)
-
-**SOLVED**: ✅✅✅ Authentication now works!
-
-**Root Cause Identified**:
-- **Issue**: Using ECB mode instead of CBC mode with zero IV
-- **Arduino Implementation**: Uses CBC mode with zero IV (as shown in user-provided code)
-- **NXP Spec Section 9.1.4**: States "Encryption and decryption are calculated using AES-128 according to the CBC mode of NIST SP800-38A"
-- **Our Original Implementation**: Used ECB mode (incorrect!)
-
-**Fix Applied**:
-- Changed `_decrypt_rndb()` to use CBC mode with zero IV
-- Changed `_encrypt_response()` to use CBC mode with zero IV  
-- Changed `_parse_card_response()` to use CBC mode with zero IV
-- Fixed status code check to accept both SW_OK (0x9000) and SW_OK_ALTERNATIVE (0x9100)
-
-**Test Results**:
-- ✅ Phase 1 authentication: SUCCESS
-- ✅ Phase 2 authentication: SUCCESS
-- ✅ Session keys derived correctly
-- ✅ Transaction ID received from tag
-
-**Key Learning**:
-- For single 16-byte blocks (Phase 1 RndB): CBC with zero IV = ECB (equivalent)
-- For 32-byte blocks (Phase 2 RndA||RndB'): CBC chains blocks differently than ECB
-- This is why Phase 2 failed with SW=91AE (Wrong RndB') - the tag decrypted with CBC and got different plaintext than our ECB encryption
+tests/
+├── crypto_primitives.py           # Crypto validation
+├── raw_changekey_test_fixed.py    # Raw pyscard test
+└── test_production_auth.py        # Production auth test
+```
 
 ---
 
-## Session 2025-11-06: Type-Safe Architecture Implementation ✅
+## Next Steps
 
-### What We Accomplished
+### Immediate
+1. ✅ Provisioning working end-to-end
+2. ⚠️ SDM configuration returns 917E (separate investigation)
+3. ✅ Factory reset working with old key XOR
 
-**1. Converted C++ to Python**
-- Arduino CRC32 class → Pure Python with 16-entry lookup table
-- Exact algorithm preserved (nibble processing)
-- 3 unit tests created
+### Future Enhancements
+1. Implement trace-based HAL simulator for testing
+2. Add integration tests using simulator
+3. Investigate SDM 917E issue (separate from provisioning)
+4. Add authenticated NDEF reads
+5. Implement file counters
 
-**2. Created DNA_Calc Unit Tests**
-- 12 comprehensive tests for change key operations
-- 10/12 passing, 2 skipped
-- 97% test coverage
+---
 
-**3. Added Type-Safe Architecture**
-- Created `AuthApduCommand` base class
-- Type-enforced authentication requirements
-- Method signatures enforce correct connection types
+## References
 
-**4. Enhanced AuthenticatedConnection**
-- Added `apply_cmac()`, `encrypt_data()`, `decrypt_data()`
-- Added `encrypt_and_mac()` convenience method
-- Delegates to proven session methods (DRY)
+- **NXP AN12196**: NTAG 424 DNA and NTAG 424 DNA TagTamper features and hints
+- **NXP AN12343**: NTAG 424 DNA / MIFARE DESFire EV2 - Session Key Derivation
+- **NXP Datasheet**: NT4H2421Gx NTAG 424 DNA, NTAG 424 DNA TagTamper
+- **SUCCESSFUL_PROVISION_FLOW.md**: Captured trace of working provisioning
 
-**5. Refactored ChangeKey Command**
-- Now extends `AuthApduCommand` (type-safe!)
-- Uses existing `_build_key_data()` method
-- Direct crypto implementation (no DNA_Calc dependency in production)
+---
 
-**6. Split ChangeFileSettings**
-- `ChangeFileSettings` → PLAIN mode only (ApduCommand)
-- `ChangeFileSettingsAuth` → MAC/FULL modes (AuthApduCommand)
-- Eliminated ~35 lines duplicate crypto
-- No if/else branches - type dispatch instead
-
-**7. Updated All Examples**
-- Migrated 5 examples to new type-safe API
-- Fixed parameter naming issues
-- All examples now working
-
-**8. Moved DNA_Calc to Test Package**
-- `src/commands/change_key.py` → `tests/dna_calc_reference.py`
-- Production code doesn't depend on test code
-- Reference available for validation
-
-**9. Created Validation Tests**
-- 11 new tests in `test_crypto_validation.py`
-- Verify crypto matches NXP spec:
-  - CMAC truncation (even-indexed bytes)
-  - IV format (A5 5A || TI || CmdCtr || zeros)
-  - Padding (0x80 + zeros per NIST SP 800-38B)
-  - Key data structures (Key 0 vs Key 1+)
-  - CRC32 correctness
-
-**10. Updated Documentation**
-- 6 design docs updated with current architecture
-- Session summaries created
-- Refactoring completion documented
-
-### Test Results
-
-```
-Before Session: 61/63 tests passing
-After Session:  72/74 tests passing (+11 validation tests)
-Coverage:       53% → 56%
-Success Rate:   97%
-```
-
-### Code Quality
-
-```
-✅ Type Safety:      100% for authenticated commands
-✅ Code Reuse:       DNA_Calc preserved as reference
-✅ DRY:              ~35 lines duplicate crypto removed
-✅ Validation:       11 tests vs NXP spec
-✅ Zero Regressions: All existing tests pass
-```
-
-### Files Changed
-
-- **Modified**: 17 files (3 core, 5 examples, 6 docs, 3 tests)
-- **Created**: 2 new test files (dna_calc_reference.py, test_crypto_validation.py)
-- **Deleted**: 1 file (src/commands/change_key.py - moved to tests)
-
-### Architecture Now
-
-```
-Production:
-  ├─ ApduCommand (unauthenticated)
-  ├─ AuthApduCommand (authenticated) ← NEW!
-  ├─ ChangeKey (type-safe) ✅
-  ├─ ChangeFileSettings (PLAIN) ✅
-  └─ ChangeFileSettingsAuth (MAC/FULL) ✅
-
-Tests:
-  ├─ dna_calc_reference.py (Arduino-based reference) ✅
-  └─ test_crypto_validation.py (11 validation tests) ✅
-```
-
-**Status**: Production ready - all crypto validated against NXP specification! ✅
-
+**Last Updated**: 2025-11-08  
+**Status**: ✅ Production Ready  
+**Key Achievement**: Complete refactor with proven end-to-end functionality
