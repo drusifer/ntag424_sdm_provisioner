@@ -33,7 +33,7 @@ class AuthenticateEV2First(ApduCommand):
     def __str__(self) -> str:
         return f"AuthenticateEV2First(key_no=0x{self.key_no:02X})"
 
-    def execute(self, connection: 'NTag424CardConnection') -> AuthenticationChallengeResponse:
+    def execute(self, connection: NTag424CardConnection) -> AuthenticationChallengeResponse:
         """
         Execute Phase 1 of EV2 authentication.
         
@@ -92,7 +92,7 @@ class AuthenticateEV2Second(ApduCommand):
     def __str__(self) -> str:
         return f"AuthenticateEV2Second(data=<{len(self.data_to_card)} bytes>)"
 
-    def execute(self, connection: 'NTag424CardConnection') -> bytes:
+    def execute(self, connection: NTag424CardConnection) -> bytes:
         """
         Execute Phase 2 of EV2 authentication.
         

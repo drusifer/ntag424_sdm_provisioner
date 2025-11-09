@@ -116,135 +116,53 @@ class TagStateManager:
                 log.info("Database Status: NOT IN DATABASE")
                 current_keys = None
             
-            # Test authentication to verify actual tag state
-            log.info("")
-            log.info("Testing tag authentication...")
-            tag_has_factory_keys = self._test_factory_auth()
-            tag_has_saved_keys = False
-            
-            if current_keys and not tag_has_factory_keys:
-                tag_has_saved_keys = self._test_saved_auth(current_keys)
-            
-            # Show actual tag state
-            log.info("")
-            log.info("Actual Tag State:")
-            log.info(f"  Factory keys work: {'YES' if tag_has_factory_keys else 'NO'}")
-            log.info(f"  Saved keys work: {'YES' if tag_has_saved_keys else 'NO'}")
+            # Decide action based on database status (don't test auth - saves attempts)
             log.info("")
             
-            # Decide action based on actual state
             if not current_keys:
-                # Not in database
-                if tag_has_factory_keys:
-                    log.info("✓ Tag has factory keys - ready to provision")
-                    return TagStateDecision(True, False, True)
-                else:
-                    log.error("✗ Unknown tag with non-factory keys!")
-                    log.error("  Cannot provision - tag needs manual recovery")
-                    return TagStateDecision(False, False, False)
+                # Not in database - assume factory
+                log.info("✓ Assuming factory keys - ready to provision")
+                return TagStateDecision(True, False, True)
             
-            # In database - check state
+            # In database - decide based on status
             if current_keys.status == "provisioned":
-                if tag_has_saved_keys:
-                    return self._handle_provisioned_tag(current_keys, target_url)
-                else:
-                    log.error("✗ Database says provisioned but keys don't work!")
-                    log.error("  Tag needs reset to factory")
-                    return self._offer_reset(uid, current_keys, tag_has_factory_keys)
+                return self._handle_provisioned_tag(current_keys, target_url)
             
             elif current_keys.status in ["failed", "pending"]:
-                log.warning("✗ Tag in bad state")
-                log.warning("  Performing factory reset to clean state...")
-                log.info("")
-                return self._auto_factory_reset(uid, tag_has_factory_keys, tag_has_saved_keys)
-            
-            else:  # factory
-                if tag_has_factory_keys:
-                    log.info("✓ Tag has factory keys - ready to provision")
+                # Bad state - offer reset
+                log.warning("✗ Tag in bad state (failed/pending provision)")
+                log.info("  Options:")
+                log.info("    1 = Reset with saved keys")
+                log.info("    2 = Reset with factory keys")
+                log.info("    3 = Try provision anyway")
+                log.info("    4 = Cancel")
+                response = input("Select (1-4): ").strip()
+                
+                if response == '1':
+                    try:
+                        saved_key = current_keys.get_picc_master_key_bytes()
+                        self._reset_to_factory_complete(uid, auth_key=saved_key, key_desc="saved")
+                        return TagStateDecision(True, True, True)
+                    except Exception as e:
+                        log.error(f"✗ Reset failed: {e}")
+                        return TagStateDecision(False, False, False)
+                elif response == '2':
+                    try:
+                        self._reset_to_factory_complete(uid, auth_key=bytes(16), key_desc="factory")
+                        return TagStateDecision(True, True, True)
+                    except Exception as e:
+                        log.error(f"✗ Reset failed: {e}")
+                        return TagStateDecision(False, False, False)
+                elif response == '3':
+                    log.info("  Attempting provision with factory keys...")
                     return TagStateDecision(True, False, True)
                 else:
-                    log.error("✗ Database says factory but keys don't work!")
-                    log.warning("  Performing factory reset to clean state...")
-                    log.info("")
-                    return self._auto_factory_reset(uid, tag_has_factory_keys, tag_has_saved_keys)
-    
-    def _test_factory_auth(self) -> bool:
-        """Test if factory keys work on the tag."""
-        try:
-            factory_key = bytes(16)
-            auth_conn = AuthenticateEV2(key=factory_key, key_no=0)(self.card)
-            auth_conn.__exit__(None, None, None)  # Clean up session
-            return True
-        except Exception:
-            return False
-    
-    def _test_saved_auth(self, keys: TagKeys) -> bool:
-        """Test if saved keys work on the tag."""
-        try:
-            saved_key = keys.get_picc_master_key_bytes()
-            auth_conn = AuthenticateEV2(key=saved_key, key_no=0)(self.card)
-            auth_conn.__exit__(None, None, None)  # Clean up session
-            return True
-        except Exception:
-            return False
-    
-    def _auto_factory_reset(self, uid: bytes, factory_works: bool, saved_works: bool) -> TagStateDecision:
-        """Automatically reset tag to factory state using whatever keys work."""
-        if factory_works:
-            log.info("  Using factory keys for reset...")
-            self._reset_to_factory_complete(uid, auth_key=bytes(16), key_desc="factory")
-            return TagStateDecision(True, True, True)
-        elif saved_works:
-            log.info("  Using saved keys for reset...")
-            # Get saved keys from database
-            try:
-                current_keys = self.key_mgr.get_tag_keys(uid)
-                saved_key = current_keys.get_picc_master_key_bytes()
-                self._reset_to_factory_complete(uid, auth_key=saved_key, key_desc="saved")
-                return TagStateDecision(True, True, True)
-            except Exception as e:
-                log.error(f"✗ Reset failed: {e}")
-                raise
-        else:
-            # Neither works - unrecoverable
-            log.error("✗ CANNOT RESET - neither factory nor saved keys work!")
-            log.error("  Tag is in corrupted state and needs manual recovery")
-            log.error("  Possible causes:")
-            log.error("    1. Tag has unknown keys (not in database)")
-            log.error("    2. Tag hardware failure")
-            log.error("    3. Excessive auth failures (91AD rate limit)")
-            log.info("")
-            log.info("Options:")
-            log.info("  1 = Continue anyway (will likely fail)")
-            log.info("  2 = Cancel")
-            response = input("Select (1-2): ").strip()
-            
-            if response == '1':
-                log.warning("  Attempting provision anyway (expect failures)...")
-                return TagStateDecision(True, False, True)  # Try with factory keys
-            else:
-                log.info("Cancelled - tag needs manual recovery or replacement")
-                return TagStateDecision(False, False, False)
-    
-    def _offer_reset(self, uid: bytes, keys: TagKeys, factory_works: bool) -> TagStateDecision:
-        """Offer reset for provisioned tags with key mismatch."""
-        log.info("➤ ACTION: Factory reset recommended")
-        response = input("Reset to factory? (Y/n): ").strip().lower()
-        
-        if response != 'n':
-            if factory_works:
-                self._reset_to_factory_complete(uid, auth_key=bytes(16), key_desc="factory")
-            else:
-                try:
-                    saved_key = keys.get_picc_master_key_bytes()
-                    self._reset_to_factory_complete(uid, auth_key=saved_key, key_desc="saved")
-                except Exception as e:
-                    log.error(f"✗ Reset failed: {e}")
+                    log.info("Cancelled")
                     return TagStateDecision(False, False, False)
-            return TagStateDecision(True, True, True)
-        
-        log.info("Cancelled")
-        return TagStateDecision(False, False, False)
+            
+            else:  # factory
+                log.info("✓ Factory state - ready to provision")
+                return TagStateDecision(True, False, True)
     
     def _handle_provisioned_tag(self, keys: TagKeys, target_url: str) -> TagStateDecision:
         """Handle healthy provisioned tag - offer URL update."""
@@ -286,25 +204,36 @@ class TagStateManager:
         
         log.info(f"Resetting all keys to factory defaults (auth with {key_desc} key)...")
         
+        # Get current keys from database to know old Key 1 and Key 3
+        try:
+            current_keys = self.key_mgr.get_tag_keys(uid)
+            old_key_1 = current_keys.get_app_read_key_bytes()
+            old_key_3 = current_keys.get_sdm_mac_key_bytes()
+        except Exception:
+            # Not in database or keys unavailable - assume factory
+            log.warning("  Cannot get old keys from database - assuming factory")
+            old_key_1 = factory_key
+            old_key_3 = factory_key
+        
         try:
             with trace_block("Factory Reset - All Keys"):
                 with AuthenticateEV2(key=auth_key, key_no=0)(self.card) as auth_conn:
                     # Reset Key 0
                     log.info("  Resetting Key 0...")
-                    auth_conn.send(ChangeKey(0, factory_key, factory_key, 0x00))
+                    auth_conn.send(ChangeKey(0, factory_key, None, 0x00))
                     log.info("    ✓ Key 0 reset")
                 
                 # Re-authenticate with factory Key 0
                 log.info("  Re-authenticating with factory Key 0...")
                 with AuthenticateEV2(key=factory_key, key_no=0)(self.card) as auth_conn:
-                    # Reset Key 1
-                    log.info("  Resetting Key 1...")
-                    auth_conn.send(ChangeKey(1, factory_key, factory_key, 0x00))
+                    # Reset Key 1 (need old key for XOR)
+                    log.info(f"  Resetting Key 1 (old key: {old_key_1.hex()[:16]}...)...")
+                    auth_conn.send(ChangeKey(1, factory_key, old_key_1, 0x00))
                     log.info("    ✓ Key 1 reset")
                     
-                    # Reset Key 3
-                    log.info("  Resetting Key 3...")
-                    auth_conn.send(ChangeKey(3, factory_key, factory_key, 0x00))
+                    # Reset Key 3 (need old key for XOR)
+                    log.info(f"  Resetting Key 3 (old key: {old_key_3.hex()[:16]}...)...")
+                    auth_conn.send(ChangeKey(3, factory_key, old_key_3, 0x00))
                     log.info("    ✓ Key 3 reset")
             
             # Update database
@@ -457,7 +386,8 @@ class SDMConfigurator:
         log.info("    Writing NDEF message...")
         self.card.send(ISOSelectFile(ISOFileID.NDEF_FILE))
         log.info(f"    Writing {len(ndef_message)} bytes (chunked)...")
-        self.card.send(WriteNdefMessage(ndef_data=ndef_message))
+        # WriteNdefMessage uses special chunked write - keep old execute() pattern
+        WriteNdefMessage(ndef_data=ndef_message).execute(self.card)
         log.info("    NDEF message written")
         self.card.send(SelectPiccApplication())
 
