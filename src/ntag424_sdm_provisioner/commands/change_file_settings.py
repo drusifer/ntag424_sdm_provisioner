@@ -53,72 +53,50 @@ class ChangeFileSettingsAuth(AuthApduCommand):
     """
     Change file settings - Authenticated modes (CommMode.MAC, CommMode.FULL).
     
-    Type-safe: Requires AuthenticatedConnection.
+    Type-safe: Requires AuthenticatedConnection via connection.send(command).
     For PLAIN mode, use ChangeFileSettings instead.
     """
     
     def __init__(self, config: SDMConfiguration):
         super().__init__(use_escape=False)
         self.config = config
-    
-    def __str__(self) -> str:
-        return f"ChangeFileSettingsAuth(file=0x{self.config.file_no:02X}, mode={self.config.comm_mode})"
-    
-    def execute(self, auth_conn: AuthenticatedConnection) -> SuccessResponse:
-        """
-        Execute ChangeFileSettings with authentication.
         
-        Type-safe: Only accepts AuthenticatedConnection.
-        
-        Args:
-            auth_conn: Authenticated connection
-            
-        Returns:
-            SuccessResponse on success
-        """
         if self.config.comm_mode == CommMode.PLAIN:
             raise ValueError(
                 "ChangeFileSettingsAuth is for authenticated modes. "
                 "For CommMode.PLAIN, use ChangeFileSettings"
             )
+    
+    def __str__(self) -> str:
+        return f"ChangeFileSettingsAuth(file=0x{self.config.file_no:02X}, mode={self.config.comm_mode})"
+    
+    def build_command_data(self, auth_conn: AuthenticatedConnection) -> tuple[bytes, bytes]:
+        """
+        Build command for auth_conn.send() - returns (header, plaintext).
+        auth_conn.send() handles encryption/CMAC automatically.
         
+        Returns:
+            (cmd_header, unencrypted_data) for CommMode.MAC
+            (cmd_header, plaintext_with_padding) for CommMode.FULL
+        """
         # Use helper to build payload
         settings_payload = build_sdm_settings_payload(self.config)
         
-        cmd_header_apdu = bytes([0x90, 0x5F, 0x00, 0x00])
+        cmd_header = bytes([0x90, 0x5F, 0x00, 0x00])
         file_no_byte = bytes([self.config.file_no])
         
-        # CommMode.FULL - encryption + CMAC
+        # For FULL mode, add padding (auth_conn will encrypt+MAC)
         if self.config.comm_mode == CommMode.FULL:
-            # Add CMAC padding: 0x80 + zeros to reach multiple of 16
             payload_with_padding = bytearray(settings_payload)
             payload_with_padding.append(0x80)
             while len(payload_with_padding) % 16 != 0:
                 payload_with_padding.append(0x00)
-            
-            # Use auth_conn methods - no manual crypto!
-            encrypted_with_mac = auth_conn.encrypt_and_mac(
-                plaintext=bytes(payload_with_padding),
-                cmd_header=cmd_header_apdu
-            )
-            
-            cmd_data = file_no_byte + encrypted_with_mac
-            
+            plaintext = file_no_byte + bytes(payload_with_padding)
         else:  # CommMode.MAC
-            # CMAC only, no encryption
-            cmd_data = file_no_byte + settings_payload
-            cmd_data = auth_conn.apply_cmac(cmd_header_apdu, cmd_data)
+            plaintext = file_no_byte + settings_payload
         
-        # Build final APDU
-        apdu = list(cmd_header_apdu) + [len(cmd_data)] + list(cmd_data) + [0x00]
-        
-        log.debug(f"ChangeFileSettingsAuth ({self.config.comm_mode}) APDU: {hexb(apdu)}")
-        
-        # Send command via underlying connection
-        _, sw1, sw2 = self.send_command(
-            auth_conn.connection,
-            apdu,
-            allow_alternative_ok=False
-        )
-        
+        return cmd_header, plaintext
+    
+    def parse_response(self, data: bytes, sw1: int, sw2: int) -> SuccessResponse:
+        """Parse response - no data expected on success."""
         return SuccessResponse(f"File {self.config.file_no:02X} settings changed")

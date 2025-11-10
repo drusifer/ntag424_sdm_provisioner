@@ -30,6 +30,10 @@ from ntag424_sdm_provisioner.commands.sun_commands import WriteNdefMessage
 from ntag424_sdm_provisioner.commands.iso_commands import ISOSelectFile, ISOFileID, ISOReadBinary
 from ntag424_sdm_provisioner.commands.base import ApduError
 from ntag424_sdm_provisioner.commands.sdm_helpers import build_ndef_uri_record, calculate_sdm_offsets
+from ntag424_sdm_provisioner.commands.get_file_ids import GetFileIds
+from ntag424_sdm_provisioner.commands.get_file_settings import GetFileSettings
+from ntag424_sdm_provisioner.commands.get_key_version import GetKeyVersion
+from ntag424_sdm_provisioner.commands.get_file_counters import GetFileCounters
 from ntag424_sdm_provisioner.constants import (
     SDMUrlTemplate, SDMConfiguration, CommMode, FileOption,
     AccessRight, AccessRights, Ntag424VersionInfo
@@ -48,6 +52,163 @@ class TagStateDecision:
     should_provision: bool
     was_reset: bool
     use_factory_keys: bool
+
+
+class TagDiagnosticReader:
+    """Reads and displays comprehensive tag diagnostics."""
+    
+    def __init__(self, card: NTag424CardConnection):
+        self.card = card
+    
+    def read_all_diagnostics(self, version_info: Ntag424VersionInfo):
+        """Read and display all available tag data and configurations."""
+        log.info("")
+        log.info("=" * 70)
+        log.info("FULL TAG DIAGNOSTICS")
+        log.info("=" * 70)
+        
+        # Chip version info
+        self._print_chip_info(version_info)
+        
+        # Key versions (unauthenticated)
+        self._read_key_versions()
+        
+        # File IDs
+        file_ids = self._read_file_ids()
+        
+        # File settings for each file
+        if file_ids:
+            self._read_all_file_settings(file_ids)
+        
+        # CC file
+        self._read_cc_file()
+        
+        # NDEF file
+        self._read_ndef_file()
+        
+        log.info("=" * 70)
+        log.info("")
+    
+    def _print_chip_info(self, version_info: Ntag424VersionInfo):
+        """Print chip version information."""
+        log.info("")
+        log.info("Chip Information:")
+        log.info(f"  UID:              {version_info.uid.hex().upper()}")
+        log.info(f"  Asset Tag:        {uid_to_asset_tag(version_info.uid)}")
+        log.info(f"  HW Vendor ID:     0x{version_info.hw_vendor_id:02X}")
+        log.info(f"  HW Type:          0x{version_info.hw_type:02X}")
+        log.info(f"  HW Subtype:       0x{version_info.hw_subtype:02X}")
+        log.info(f"  HW Version:       {version_info.hw_major_version}.{version_info.hw_minor_version}")
+        log.info(f"  HW Storage:       {version_info.hw_storage_size} bytes")
+        log.info(f"  HW Protocol:      {version_info.hw_protocol}")
+        log.info(f"  SW Vendor ID:     0x{version_info.sw_vendor_id:02X}")
+        log.info(f"  SW Type:          0x{version_info.sw_type:02X}")
+        log.info(f"  SW Subtype:       0x{version_info.sw_subtype:02X}")
+        log.info(f"  SW Version:       {version_info.sw_major_version}.{version_info.sw_minor_version}")
+        log.info(f"  SW Storage:       {version_info.sw_storage_size} bytes")
+        log.info(f"  SW Protocol:      {version_info.sw_protocol}")
+        log.info(f"  Batch Number:     {version_info.batch_no.hex().upper()}")
+        log.info(f"  Fabrication Date: Week {version_info.fab_week}, 20{version_info.fab_year}")
+        log.info("")
+    
+    def _read_key_versions(self):
+        """Read key versions for all keys (0-4)."""
+        log.info("Key Versions (unauthenticated read):")
+        for key_no in range(5):
+            try:
+                version_response = self.card.send(GetKeyVersion(key_no))
+                log.info(f"  Key {key_no}: v0x{version_response.version:02X}")
+            except Exception as e:
+                log.warning(f"  Key {key_no}: Could not read ({e})")
+        log.info("")
+    
+    def _read_file_ids(self) -> list:
+        """Read list of file IDs."""
+        try:
+            file_ids = self.card.send(GetFileIds())
+            log.info(f"File IDs: {[f'0x{fid:02X}' for fid in file_ids]}")
+            log.info("")
+            return file_ids
+        except Exception as e:
+            log.warning(f"Could not read file IDs: {e}")
+            log.info("")
+            return []
+    
+    def _read_all_file_settings(self, file_ids: list):
+        """Read settings for all files."""
+        log.info("File Settings:")
+        for file_id in file_ids:
+            try:
+                settings = self.card.send(GetFileSettings(file_id))
+                log.info(f"  File 0x{file_id:02X}:")
+                log.info(f"    Type:         {settings.file_type}")
+                log.info(f"    Comm:         {settings.communication_settings}")
+                log.info(f"    Access Rights: {settings.access_rights}")
+                if hasattr(settings, 'file_size'):
+                    log.info(f"    Size:         {settings.file_size} bytes")
+                if hasattr(settings, 'sdm_options') and settings.sdm_options:
+                    log.info(f"    SDM Options:  {settings.sdm_options}")
+            except Exception as e:
+                log.warning(f"  File 0x{file_id:02X}: Could not read ({e})")
+        log.info("")
+    
+    def _read_cc_file(self):
+        """Read Capability Container file."""
+        log.info("Capability Container (CC) File:")
+        try:
+            self.card.send(ISOSelectFile(ISOFileID.CC_FILE))
+            cc_data = self.card.send(ISOReadBinary(offset=0, length=15))
+            log.info(f"  Raw Data: {bytes(cc_data).hex().upper()}")
+            if len(cc_data) >= 15:
+                log.info(f"    Magic:       {bytes(cc_data[0:2]).hex().upper()}")
+                log.info(f"    Version:     {cc_data[2]:02X}.{cc_data[3]:02X}")
+                log.info(f"    MLe:         {(cc_data[4] << 8) | cc_data[5]} bytes")
+                log.info(f"    MLc:         {(cc_data[6] << 8) | cc_data[7]} bytes")
+                log.info(f"    NDEF File:   {bytes(cc_data[9:11]).hex().upper()}")
+                log.info(f"    Max Size:    {(cc_data[11] << 8) | cc_data[12]} bytes")
+                log.info(f"    Read Access: 0x{cc_data[13]:02X}")
+                log.info(f"    Write Access: 0x{cc_data[14]:02X}")
+            self.card.send(SelectPiccApplication())
+        except Exception as e:
+            log.warning(f"  Could not read: {e}")
+        log.info("")
+    
+    def _read_ndef_file(self):
+        """Read NDEF file data."""
+        log.info("NDEF File:")
+        try:
+            self.card.send(ISOSelectFile(ISOFileID.NDEF_FILE))
+            ndef_data = self.card.send(ISOReadBinary(offset=0, length=200))
+            
+            # Parse length field
+            length = (ndef_data[0] << 8) | ndef_data[1] if len(ndef_data) >= 2 else 0
+            log.info(f"  Length:      {length} bytes")
+            
+            # Show first 100 bytes
+            display_len = min(100, len(ndef_data))
+            log.info(f"  Data (first {display_len} bytes):")
+            hex_str = bytes(ndef_data[:display_len]).hex().upper()
+            for i in range(0, len(hex_str), 64):
+                log.info(f"    {hex_str[i:i+64]}")
+            
+            # Try to parse URL
+            if 0x55 in ndef_data:
+                try:
+                    uri_pos = ndef_data.index(0x55)
+                    prefix_code = ndef_data[uri_pos + 1]
+                    url_start = uri_pos + 2
+                    url_end = ndef_data.index(0xFE) if 0xFE in ndef_data else len(ndef_data)
+                    url_bytes = bytes(ndef_data[url_start:url_end])
+                    prefix = NdefUriPrefix.get_prefix(prefix_code)
+                    url = prefix + url_bytes.decode('utf-8', errors='ignore')
+                    log.info(f"  URL:         {url}")
+                except Exception:
+                    pass
+            
+            self.card.send(SelectPiccApplication())
+        except Exception as e:
+            log.warning(f"  Could not read: {e}")
+        log.info("")
 
 
 class NdefUrlReader:
@@ -129,63 +290,268 @@ class TagStateManager:
                 return self._handle_provisioned_tag(current_keys, target_url)
             
             elif current_keys.status in ["failed", "pending"]:
-                # Bad state - offer reset
-                log.warning("✗ Tag in bad state (failed/pending provision)")
-                log.info("  Options:")
-                log.info("    1 = Reset with saved keys")
-                log.info("    2 = Reset with factory keys")
-                log.info("    3 = Try provision anyway")
-                log.info("    4 = Cancel")
-                response = input("Select (1-4): ").strip()
+                # Check if tag is truly factory by examining NDEF content
+                # (Key versions can be v0x00 even on provisioned tags)
+                has_provisioned_ndef = False
+                try:
+                    self.card.send(ISOSelectFile(ISOFileID.NDEF_FILE))
+                    ndef_data = self.card.send(ISOReadBinary(0, 100))
+                    
+                    # Check if NDEF contains provisioned URL (has query params)
+                    if b'uid=' in ndef_data or b'ctr=' in ndef_data:
+                        has_provisioned_ndef = True
+                        log.info("✗ Tag has provisioned NDEF content - keys are NOT factory")
+                        log.info("  (Key versions can show v0x00 even when changed)")
+                    else:
+                        log.info("✓ NDEF looks blank - assuming factory state")
+                        log.info("  Proceeding with fresh provision")
+                        self.card.send(SelectPiccApplication())
+                        return TagStateDecision(True, False, True)
+                except Exception:
+                    pass  # If read fails, show menu
                 
-                if response == '1':
-                    try:
-                        saved_key = current_keys.get_picc_master_key_bytes()
-                        self._reset_to_factory_complete(uid, auth_key=saved_key, key_desc="saved")
-                        return TagStateDecision(True, True, True)
-                    except Exception as e:
-                        log.error(f"✗ Reset failed: {e}")
-                        return TagStateDecision(False, False, False)
-                elif response == '2':
-                    try:
-                        self._reset_to_factory_complete(uid, auth_key=bytes(16), key_desc="factory")
-                        return TagStateDecision(True, True, True)
-                    except Exception as e:
-                        log.error(f"✗ Reset failed: {e}")
-                        return TagStateDecision(False, False, False)
-                elif response == '3':
-                    log.info("  Attempting provision with factory keys...")
-                    return TagStateDecision(True, False, True)
-                else:
-                    log.info("Cancelled")
-                    return TagStateDecision(False, False, False)
+                self.card.send(SelectPiccApplication())
+                return self._handle_bad_state_tag(uid, current_keys, target_url, has_provisioned_ndef)
             
             else:  # factory
                 log.info("✓ Factory state - ready to provision")
                 return TagStateDecision(True, False, True)
     
+    def _get_backups_for_uid(self, uid: bytes) -> list:
+        """Load backups for a specific UID, newest first."""
+        import csv
+        from datetime import datetime
+        
+        backups = []
+        backup_path = self.key_mgr.backup_path
+        
+        if not backup_path.exists():
+            return backups
+        
+        uid_hex = uid.hex().upper()
+        
+        with open(backup_path, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row['uid'].upper() == uid_hex:
+                    backups.append(row)
+        
+        # Sort by timestamp, newest first
+        backups.sort(key=lambda x: x.get('backup_timestamp', ''), reverse=True)
+        return backups
+    
+    def _find_best_backup(self, backups: list) -> tuple:
+        """
+        Find the most likely working backup.
+        
+        Returns (index, backup) or (None, None) if none found.
+        Logic: Most recent "provisioned" backup before any "failed" ones.
+        """
+        if not backups:
+            return None, None
+        
+        # Find first "provisioned" backup (newest working one)
+        for i, backup in enumerate(backups):
+            if backup.get('status') == 'provisioned':
+                return i, backup
+        
+        # No provisioned backup found
+        return None, None
+    
+    def _restore_backup(self, uid: bytes, backup_entry: dict) -> TagKeys:
+        """Restore a backup entry to the main database."""
+        from datetime import datetime
+        
+        # Remove backup_timestamp if present
+        backup_entry = dict(backup_entry)
+        backup_entry.pop('backup_timestamp', None)
+        
+        # Create TagKeys object
+        keys = TagKeys(**backup_entry)
+        
+        # Mark as restored
+        original_status = keys.status
+        keys.status = "provisioned"
+        keys.notes = f"Restored from backup (was {original_status}) at {datetime.now().isoformat()}"
+        
+        # Save to main database
+        self.key_mgr.save_tag_keys(uid, keys)
+        
+        log.info(f"✅ Restored keys from backup")
+        log.info(f"   Original status: {original_status}")
+        log.info(f"   PICC Master Key: {keys.picc_master_key[:16]}...")
+        
+        return keys
+    
+    def _handle_bad_state_tag(self, uid: bytes, keys: TagKeys, target_url: str, 
+                               has_provisioned_ndef: bool = False) -> TagStateDecision:
+        """Handle tag in bad state (failed/pending) - loop until user decides."""
+        while True:
+            log.warning("✗ Tag in bad state (failed/pending provision)")
+            
+            if has_provisioned_ndef:
+                # Tag has custom keys - offer backup restore
+                backups = self._get_backups_for_uid(uid)
+                best_idx, best_backup = self._find_best_backup(backups)
+                
+                if best_backup:
+                    backup_ts = best_backup.get('backup_timestamp', 'unknown time')
+                    log.info(f"  Found {len(backups)} backup(s)")
+                    log.info(f"  Recommended: Backup from {backup_ts} (status: provisioned)")
+                else:
+                    log.warning("  ⚠️  No successful backups found - all provisions failed")
+                    log.info("  This tag may have factory keys OR was provisioned externally")
+                
+                log.info("")
+                log.info("  Options:")
+                if best_backup:
+                    log.info("    1 = Restore recommended backup and retry")
+                    log.info("    2 = Re-provision with current saved keys (may fail)")
+                    log.info("    3 = Show all backups")
+                    log.info("    4 = Show full diagnostics")
+                    log.info("    5 = Cancel")
+                    response = input("Select (1-5): ").strip()
+                else:
+                    log.info("    1 = Re-provision with saved keys (likely wrong)")
+                    log.info("    2 = Try factory keys (if never successfully provisioned)")
+                    log.info("    3 = Show all backups")
+                    log.info("    4 = Show full diagnostics")
+                    log.info("    5 = Cancel")
+                    response = input("Select (1-5): ").strip()
+                
+                if best_backup and response == '1':
+                    # Restore recommended backup
+                    log.info("  Restoring recommended backup...")
+                    self._restore_backup(uid, best_backup)
+                    log.info("  Proceeding with restored keys...")
+                    return TagStateDecision(True, False, False)
+                    
+                elif best_backup and response == '2':
+                    log.warning("  ⚠️  Using current saved keys (may be wrong if provision failed)")
+                    return TagStateDecision(True, False, False)
+                    
+                elif best_backup and response == '3':
+                    # Show all backups
+                    log.info("")
+                    log.info("=" * 70)
+                    log.info(f"All backups for UID {uid.hex().upper()}")
+                    log.info("=" * 70)
+                    for i, backup in enumerate(backups, 1):
+                        ts = backup.get('backup_timestamp', 'unknown')
+                        status = backup.get('status', 'unknown')
+                        notes = backup.get('notes', '')
+                        picc_key = backup['picc_master_key'][:16]
+                        recommended = " ← RECOMMENDED" if i-1 == best_idx else ""
+                        log.info(f"[{i}] {ts} | Status: {status}{recommended}")
+                        log.info(f"    PICC Key: {picc_key}... | Notes: {notes}")
+                    log.info("=" * 70)
+                    log.info("")
+                    
+                    selection = input(f"Select backup to restore (1-{len(backups)}) or Enter to go back: ").strip()
+                    if selection and selection.isdigit():
+                        idx = int(selection) - 1
+                        if 0 <= idx < len(backups):
+                            self._restore_backup(uid, backups[idx])
+                            log.info("  Proceeding with restored keys...")
+                            return TagStateDecision(True, False, False)
+                    # Loop back to menu
+                    
+                elif best_backup and response == '4':
+                    version_info = self.card.send(GetChipVersion())
+                    diagnostics = TagDiagnosticReader(self.card)
+                    diagnostics.read_all_diagnostics(version_info)
+                    
+                elif not best_backup and response == '1':
+                    log.warning("  ⚠️  Using current saved keys (likely wrong)...")
+                    return TagStateDecision(True, False, False)
+                    
+                elif not best_backup and response == '2':
+                    log.info("  Attempting provision with factory keys...")
+                    return TagStateDecision(True, False, True)  # use_factory_keys=True
+                    
+                elif not best_backup and response == '3':
+                    # Show all backups
+                    log.info("")
+                    log.info("=" * 70)
+                    log.info(f"All backups for UID {uid.hex().upper()}")
+                    log.info("=" * 70)
+                    for i, backup in enumerate(backups, 1):
+                        ts = backup.get('backup_timestamp', 'unknown')
+                        status = backup.get('status', 'unknown')
+                        notes = backup.get('notes', '')
+                        picc_key = backup['picc_master_key'][:16]
+                        log.info(f"[{i}] {ts} | Status: {status}")
+                        log.info(f"    PICC Key: {picc_key}... | Notes: {notes}")
+                    log.info("=" * 70)
+                    log.info("")
+                    
+                    selection = input(f"Select backup to restore (1-{len(backups)}) or Enter to go back: ").strip()
+                    if selection and selection.isdigit():
+                        idx = int(selection) - 1
+                        if 0 <= idx < len(backups):
+                            self._restore_backup(uid, backups[idx])
+                            log.info("  Proceeding with restored keys...")
+                            return TagStateDecision(True, False, False)
+                    # Loop back to menu
+                    
+                elif not best_backup and response == '4':
+                    version_info = self.card.send(GetChipVersion())
+                    diagnostics = TagDiagnosticReader(self.card)
+                    diagnostics.read_all_diagnostics(version_info)
+                    
+                else:
+                    log.info("Cancelled")
+                    return TagStateDecision(False, False, False)
+            else:
+                # NDEF looks blank - might be factory
+                log.info("  Suggestion: Try factory keys (NDEF looks blank)")
+                log.info("")
+                log.info("  Options:")
+                log.info("    1 = Provision with factory keys")
+                log.info("    2 = Show full diagnostics")
+                log.info("    3 = Cancel")
+                response = input("Select (1-3): ").strip()
+                
+                if response == '1':
+                    log.info("  Attempting provision with factory keys...")
+                    return TagStateDecision(True, False, True)  # use_factory_keys=True
+                elif response == '2':
+                    version_info = self.card.send(GetChipVersion())
+                    diagnostics = TagDiagnosticReader(self.card)
+                    diagnostics.read_all_diagnostics(version_info)
+                else:
+                    log.info("Cancelled")
+                    return TagStateDecision(False, False, False)
+    
     def _handle_provisioned_tag(self, keys: TagKeys, target_url: str) -> TagStateDecision:
-        """Handle healthy provisioned tag - offer URL update."""
-        # Read current URL
-        tap_url = self.url_reader.read_url()
-        if tap_url:
-            log.info(f"  Current Tap URL: {tap_url}")
-        
-        # Show comparison
-        saved_url = keys.notes if keys.notes else "(no URL saved)"
-        log.info(f"  Saved URL: {saved_url}")
-        log.info(f"  Target URL: {target_url}")
-        log.info("")
-        
-        if tap_url and tap_url == target_url:
-            log.info("✓ URLs match - coin is correctly configured")
-            return TagStateDecision(False, False, False)
-        
-        log.info("Options: 1=Update URL | 2=Re-provision | 3=Cancel")
-        response = input("Select (1-3): ").strip()
-        
-        should_provision = response in ['1', '2']
-        return TagStateDecision(should_provision, False, False)
+        """Handle healthy provisioned tag - loop until user decides."""
+        while True:
+            # Read current URL
+            tap_url = self.url_reader.read_url()
+            if tap_url:
+                log.info(f"  Current Tap URL: {tap_url}")
+            
+            # Show comparison
+            saved_url = keys.notes if keys.notes else "(no URL saved)"
+            log.info(f"  Saved URL: {saved_url}")
+            log.info(f"  Target URL: {target_url}")
+            log.info("")
+            
+            if tap_url and tap_url == target_url:
+                log.info("✓ URLs match - coin is correctly configured")
+                return TagStateDecision(False, False, False)
+            
+            log.info("Options: 1=Update URL | 2=Re-provision | 3=Show diagnostics | 4=Cancel")
+            response = input("Select (1-4): ").strip()
+            
+            if response == '3':
+                version_info = self.card.send(GetChipVersion())
+                diagnostics = TagDiagnosticReader(self.card)
+                diagnostics.read_all_diagnostics(version_info)
+                # Loop continues - menu re-displays
+            else:
+                should_provision = response in ['1', '2']
+                return TagStateDecision(should_provision, False, False)
     
     def _reset_with_key(self, uid: bytes, auth_key: bytes, key_description: str):
         """Reset ONLY Key 0 to factory defaults."""
@@ -259,15 +625,29 @@ class KeyChangeOrchestrator:
     def __init__(self, card: NTag424CardConnection):
         self.card = card
     
-    def change_all_keys(self, old_picc_key: bytes, new_keys: TagKeys):
-        """Change keys using two-phase protocol (prevents brick)."""
+    def change_all_keys(
+        self, 
+        old_picc_key: bytes, 
+        new_keys: TagKeys, 
+        old_keys: Optional[TagKeys] = None,
+        sdm_config_callback=None
+    ):
+        """
+        Change all keys using two-phase protocol.
+        
+        Args:
+            old_picc_key: Current PICC master key for initial auth
+            new_keys: New keys to provision
+            old_keys: Current keys on tag (for re-provision). None for factory tags.
+            sdm_config_callback: Optional callback to configure SDM in Session 2
+        """
         log.info("  [Session 1] Changing Key 0...")
         self._change_picc_master_key(old_picc_key, new_keys)
         
         log.info("")
         log.info("  [Session 2] Changing Key 1 and Key 3...")
         log.info("    (Re-authenticating with NEW Key 0)")
-        self._change_application_keys(new_keys)
+        self._change_application_keys(new_keys, old_keys, sdm_config_callback)
         
         log.info("    All keys changed successfully")
         log.info("")
@@ -282,26 +662,35 @@ class KeyChangeOrchestrator:
                     res = auth_conn.send(ChangeKey(
                         key_no_to_change=0,
                         new_key=new_keys.get_picc_master_key_bytes(),
-                        old_key=None
+                        old_key=None  # Key 0 never needs old_key
                     ))
                     log.info(f"    Key 0 changed - {res}")
                 
                 log.info("    Session 1 ended (invalid after Key 0 change)")
     
-    def _change_application_keys(self, new_keys: TagKeys):
-        """Session 2: Change Application Keys (Key 1 and 3)."""
+    def _change_application_keys(
+        self, 
+        new_keys: TagKeys, 
+        old_keys: Optional[TagKeys],
+        sdm_config_callback=None
+    ):
+        """Session 2: Change Application Keys (Key 1 and 3) and optionally configure SDM."""
         with trace_block("Session 2: Change Keys 1 and 3"):
             new_picc_key = new_keys.get_picc_master_key_bytes()
             
             with AuthenticateEV2(new_picc_key, key_no=0)(self.card) as auth_conn:
                 log.info("    Authenticated with NEW Key 0")
                 
+                # Determine old keys (None for factory, from old_keys for re-provision)
+                old_key_1 = old_keys.get_app_read_key_bytes() if old_keys else None
+                old_key_3 = old_keys.get_sdm_mac_key_bytes() if old_keys else None
+                
                 # Change Key 1 (App Read)
                 with trace_block("ChangeKey 1"):
                     res = auth_conn.send(ChangeKey(
                         key_no_to_change=1,
                         new_key=new_keys.get_app_read_key_bytes(),
-                        old_key=None
+                        old_key=old_key_1
                     ))
                     log.info(f"    Key 1 changed - {res}")
                 
@@ -310,9 +699,14 @@ class KeyChangeOrchestrator:
                     res = auth_conn.send(ChangeKey(
                         key_no_to_change=3,
                         new_key=new_keys.get_sdm_mac_key_bytes(),
-                        old_key=None
+                        old_key=old_key_3
                     ))
                     log.info(f"    Key 3 changed - {res}")
+                
+                # Configure SDM while still authenticated (if callback provided)
+                if sdm_config_callback:
+                    log.info("")
+                    sdm_config_callback(auth_conn)
 
 
 class SDMConfigurator:
@@ -321,7 +715,7 @@ class SDMConfigurator:
     def __init__(self, card: NTag424CardConnection):
         self.card = card
     
-    def configure_and_write_ndef(self, url_template: str, base_url: str):
+    def configure_and_write_ndef(self, url_template: str, base_url: str, auth_conn=None):
         """Configure SDM and write NDEF message."""
         log.info("  [Session 2] Configuring SDM and writing NDEF...")
         log.info("-" * 70)
@@ -334,8 +728,8 @@ class SDMConfigurator:
         offsets = self._calculate_offsets(base_url, url_template)
         log.info(f"    SDM Offsets: {offsets}")
         
-        # Configure SDM
-        self._configure_sdm(offsets)
+        # Configure SDM (with authentication if provided)
+        self._configure_sdm(offsets, auth_conn)
         
         # Write NDEF
         self._write_ndef(ndef_message)
@@ -353,7 +747,7 @@ class SDMConfigurator:
         )
         return calculate_sdm_offsets(template)
     
-    def _configure_sdm(self, offsets):
+    def _configure_sdm(self, offsets, auth_conn=None):
         """Apply SDM configuration to NDEF file."""
         access_rights = AccessRights(
             read=AccessRight.FREE,
@@ -362,9 +756,10 @@ class SDMConfigurator:
             change=AccessRight.FREE
         )
         
+        # Use CommMode.MAC for authenticated change
         sdm_config = SDMConfiguration(
             file_no=0x02,
-            comm_mode=CommMode.PLAIN,
+            comm_mode=CommMode.MAC if auth_conn else CommMode.PLAIN,
             access_rights=access_rights,
             enable_sdm=True,
             sdm_options=(FileOption.UID_MIRROR | FileOption.READ_COUNTER),
@@ -375,8 +770,15 @@ class SDMConfigurator:
         log.info("    Configuring SDM...")
         
         try:
-            self.card.send(ChangeFileSettings(sdm_config))
-            log.info("    SDM configured successfully!")
+            if auth_conn:
+                # Authenticated mode - use auth_conn.send() (handles crypto)
+                from ntag424_sdm_provisioner.commands.change_file_settings import ChangeFileSettingsAuth
+                result = auth_conn.send(ChangeFileSettingsAuth(sdm_config))
+                log.info(f"    SDM configured successfully! {result}")
+            else:
+                # Plain mode fallback (for backwards compat)
+                self.card.send(ChangeFileSettings(sdm_config))
+                log.info("    SDM configured successfully!")
         except ApduError as e:
             log.warning(f"    SDM configuration failed: {e}")
             log.info("    Continuing with NDEF write (SDM placeholders won't work)")
@@ -535,11 +937,16 @@ class ProvisioningOrchestrator:
             log.info(f"    SDM MAC:     {new_keys.sdm_mac_key[:16]}...")
             log.info("")
             
-            # Change all keys
-            self.key_changer.change_all_keys(current_picc_key, new_keys)
+            # Create SDM configuration callback (will be called inside Session 2)
+            def configure_sdm_callback(auth_conn):
+                """Configure SDM within authenticated session."""
+                self.sdm_config.configure_and_write_ndef(url_template, base_url, auth_conn)
             
-            # Configure SDM and write NDEF (still in auth session)
-            self.sdm_config.configure_and_write_ndef(url_template, base_url)
+            # Determine old keys (None for factory, current_keys for re-provision)
+            old_keys = None if current_keys.status == 'factory' else current_keys
+            
+            # Change all keys (SDM will be configured at end of Session 2)
+            self.key_changer.change_all_keys(current_picc_key, new_keys, old_keys, configure_sdm_callback)
             
             log.info("  [Phase 2] Provisioning complete!")
             log.info("")

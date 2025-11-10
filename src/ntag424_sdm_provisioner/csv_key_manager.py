@@ -288,7 +288,7 @@ class CsvKeyManager:
                 # Provision tag with keys.picc_master_key, etc.
                 ChangeKey(keys.picc_master_key).execute(...)
                 # If no exception, status updated to 'provisioned' on exit
-                # If exception, status updated to 'failed'
+                # If exception, OLD keys restored to DB with status='failed'
         
         Args:
             uid: Tag UID as bytes
@@ -306,10 +306,17 @@ class CsvKeyManager:
                     auth.change_key(3, keys.get_sdm_mac_key_bytes())
                 # SUCCESS: Status automatically updated to 'provisioned'
             except Exception as e:
-                # FAILURE: Status automatically updated to 'failed'
+                # FAILURE: OLD keys restored with status='failed'
                 print(f"Provisioning failed: {e}")
         """
-        # Phase 1: Generate keys and save with 'pending' status
+        # Save OLD keys before generating NEW keys
+        try:
+            old_keys = self.get_tag_keys(uid)
+        except KeyError:
+            old_keys = None
+        
+        # Phase 1: Generate NEW keys and save with 'pending' status
+        # (This automatically backs up OLD keys via save_tag_keys)
         new_keys = self.generate_random_keys(uid)
         new_keys.status = "pending"
         new_keys.notes = "Provisioning in progress..."
@@ -317,18 +324,26 @@ class CsvKeyManager:
         
         success = False
         try:
-            # Yield keys to caller for provisioning
+            # Yield NEW keys to caller for provisioning
             yield new_keys
             success = True
         except Exception as e:
-            # Phase 2a: Provisioning failed
-            new_keys.status = "failed"
-            new_keys.notes = f"Provisioning failed: {str(e)}"
-            self.save_tag_keys(uid, new_keys)
+            # Phase 2a: Provisioning failed - RESTORE OLD keys
+            # The tag still has OLD keys, so DB must reflect that
+            if old_keys:
+                old_keys.status = "failed"
+                old_keys.notes = f"Provisioning failed: {str(e)}"
+                self.save_tag_keys(uid, old_keys)
+            else:
+                # No old keys - was factory, still is factory
+                factory_keys = TagKeys.from_factory_keys(uid.hex().upper())
+                factory_keys.status = "failed"
+                factory_keys.notes = f"Provisioning failed: {str(e)}"
+                self.save_tag_keys(uid, factory_keys)
             raise  # Re-raise exception
         finally:
             if success:
-                # Phase 2b: Provisioning succeeded
+                # Phase 2b: Provisioning succeeded - NEW keys now on tag
                 new_keys.status = "provisioned"
                 new_keys.notes = url if url else "Successfully provisioned"
                 self.save_tag_keys(uid, new_keys)

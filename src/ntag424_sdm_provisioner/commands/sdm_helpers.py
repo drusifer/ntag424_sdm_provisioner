@@ -5,6 +5,8 @@ from ntag424_sdm_provisioner.constants import (
     SDMUrlTemplate, SDMConfiguration, SDMOffsets, FileOption, FileSettingsResponse, KeyVersionResponse
 )
 
+
+
 def calculate_sdm_offsets(template: SDMUrlTemplate) -> SDMOffsets:
     """
     Calculate byte offsets for SDM mirrors in NDEF message.
